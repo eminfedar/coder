@@ -83,6 +83,8 @@ pub enum DragTarget {
     EditorSelect,
     /// Dragging the editor scrollbar thumb.
     Scrollbar,
+    /// Dragging the editor's horizontal scrollbar thumb.
+    ScrollbarX,
     /// Dragging inside the terminal area to select text.
     TerminalSelect,
     /// Dragging the terminal scrollback scrollbar thumb.

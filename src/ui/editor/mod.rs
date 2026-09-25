@@ -2,10 +2,12 @@
 //!
 //! Submodules: `overlays` (diagnostic / selection / find cell overlays),
 //! `commit_view` (non-code rows of a commit's diff view), `scrollbar`, and
-//! `diagnostics` (severity glyph / color / rank).
+//! `hscrollbar` (horizontal viewport control), and `diagnostics` (severity
+//! glyph / color / rank).
 
 mod commit_view;
 mod diagnostics;
+mod hscrollbar;
 mod overlays;
 mod scrollbar;
 
@@ -29,7 +31,22 @@ use diagnostics::severity_rank;
 use overlays::{overlay_diagnostics, overlay_find_matches, overlay_selection};
 
 pub use diagnostics::{severity_color, severity_icon};
+pub(crate) use hscrollbar::{horizontal_scroll_metrics, render_hscrollbar};
 pub use scrollbar::render_scrollbar;
+
+/// Widest source line shown by the editor, including removed lines woven into
+/// a diff tab. The horizontal scrollbar and its input mapping share this value.
+pub(crate) fn horizontal_content_len(model: &Model) -> usize {
+    let real = model.active_buffer().map_or(0, Buffer::max_line_len);
+    let deleted = model
+        .active_deleted
+        .iter()
+        .flat_map(|(_, lines)| lines)
+        .map(|line| line.chars().count())
+        .max()
+        .unwrap_or(0);
+    real.max(deleted)
+}
 
 /// Placeholder cell for characters that must not reach the terminal raw.
 const PLACEHOLDER: char = '\u{FFFD}';

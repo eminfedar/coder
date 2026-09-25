@@ -43,6 +43,11 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model) {
             buf.cursor.line + 1,
             buf.cursor.col + 1
         ));
+        let line_ending = buf.line_ending_label();
+        if !line_ending.is_empty() {
+            right.push_str(line_ending);
+            right.push_str("  ");
+        }
         if buf.dirty {
             right.push_str("● ");
         }

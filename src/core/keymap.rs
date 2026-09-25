@@ -23,6 +23,9 @@ pub enum Action {
     Backspace,
     Delete,
     Move(Motion, bool), // (direction, extend selection)
+    /// Alt+Left / Alt+Right: scroll the editor viewport horizontally without
+    /// moving the cursor (1 = right, -1 = left).
+    HScroll(isize),
     /// Alt+Up / Alt+Down: move the current line (or selected lines) up/down.
     MoveLineUp,
     MoveLineDown,
@@ -189,6 +192,13 @@ fn resolve_editor(key: KeyEvent, ctrl: bool, shift: bool) -> Option<Action> {
     // Ctrl+Left/Right word motion, plus typing / cursor motion / structural keys.
     if let Some(c) = altgr_char(&key) {
         return Some(Action::Insert(c));
+    }
+    if key.modifiers.contains(KeyModifiers::ALT) && !ctrl {
+        match key.code {
+            KeyCode::Left => return Some(Action::HScroll(-1)),
+            KeyCode::Right => return Some(Action::HScroll(1)),
+            _ => {}
+        }
     }
     if ctrl {
         return match key.code {

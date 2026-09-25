@@ -30,6 +30,8 @@ It starts instantly and uses very little memory.
 - **Git panel** — branch, staged/unstaged tree, stage, unstage, revert, commit, fetch, pull, push and commit history.
 - **Git diff view** — open any changed file as a diff tab. Added lines green, removed lines shown inline in red.
 - **Change gutter** — every file shows its git changes next to the line numbers and on the scrollbar.
+- **Horizontal scrolling** — move the editor viewport across long lines without moving the cursor; the scrollbar appears only when needed.
+- **Line endings** — see `LF`, `CRLF` or `Mixed` for the active file in the status bar.
 - **Find & replace** — in the current file (`Ctrl+F` / `Ctrl+H`) or across the whole project, with regex support.
 - **Embedded terminal** — a real shell in a split panel (`Ctrl+J`).
 - **Themes** — Dracula, Gruvbox, Nord, One Dark, Monokai, Tokyo Night, Catppuccin and more. Switch live, your choice is saved.
@@ -72,15 +74,27 @@ coder completions fish > ~/.config/fish/completions/coder.fish
 | `Ctrl+W` | Close tab |
 | `Ctrl+B` | Toggle sidebar |
 | `Ctrl+J` | Toggle terminal |
+| `Ctrl+P` | Open Quickbar (command and file picker) |
 | `Ctrl+F` / `Ctrl+H` | Find / Find & replace |
 | `Ctrl+Space` | Autocomplete |
 | `Ctrl+Alt+F` | Format file |
+| `Alt+←` / `Alt+→` | Scroll the editor horizontally |
+| `Alt+L` | Arm the one-shot Leader key |
+| `Alt+7` | Open the keybindings editor |
 
 Editing works the usual way: arrows, `Home`/`End`, `PageUp`/`PageDown`, `Shift` to select, `Ctrl+←`/`→` to jump words, `Ctrl+C`/`X`/`V`/`Z`/`Y`/`A`.
 
+The Leader key is a one-shot prefix for commands marked `locked` in
+`keybindings.toml`. Press `Alt+L`, then the configured shortcut. By default,
+commands are not locked, so the Leader key has no effect until you mark a
+binding as locked.
+
 ## Configuration
 
-Settings live in `~/.config/coder/config.toml`. The file is created on first run and you can edit it by hand.
+Settings live in `~/.config/coder/config.toml` by default. The file is created
+on first run and can also be edited from the Settings panel. The same panel
+opens `keybindings.toml`, where shortcuts and their optional `locked` behavior
+can be customized. Set `CODER_CONFIG` to choose an explicit config path.
 
 ```toml
 theme = "base16-ocean.dark"

@@ -30,6 +30,11 @@ pub(super) fn handle_mouse(model: &mut Model, m: MouseEvent) -> Vec<Cmd> {
                 scrollbar_jump(model, &a, y);
                 return Vec::new();
             }
+            if a.scrollbar_x_track.height > 0 && rect_contains(a.scrollbar_x_track, x, y) {
+                model.drag = Some(DragTarget::ScrollbarX);
+                hscrollbar_jump(model, &a, x);
+                return Vec::new();
+            }
             // Terminal scrollbar (rightmost inner column of the terminal).
             if a.terminal_open
                 && model.terminal.session.is_some()
@@ -68,6 +73,7 @@ pub(super) fn handle_mouse(model: &mut Model, m: MouseEvent) -> Vec<Cmd> {
                     ensure_cursor_visible(model);
                 }
                 Some(DragTarget::Scrollbar) => scrollbar_jump(model, &a, y),
+                Some(DragTarget::ScrollbarX) => hscrollbar_jump(model, &a, x),
                 Some(DragTarget::TerminalScrollbar) => terminal_scrollbar_jump(model, &a, y),
                 Some(DragTarget::TerminalSelect) => {
                     if let Some((sr, sc, _, _)) = model.terminal.selection {
@@ -454,7 +460,40 @@ fn scrollbar_jump(model: &mut Model, a: &ui::Areas, y: u16) {
     }
 }
 
+/// Jumps the horizontal viewport so the clicked scrollbar position is centered.
+fn hscrollbar_jump(model: &mut Model, a: &ui::Areas, x: u16) {
+    let track = a.scrollbar_x_track;
+    let track_len = track.width as usize;
+    if track_len == 0 {
+        return;
+    }
+    let total = ui::editor::horizontal_content_len(model);
+    if let Some(buf) = model.active_buffer_mut() {
+        let viewport = track_len;
+        let metrics =
+            ui::editor::horizontal_scroll_metrics(total, viewport, buf.scroll_x, track_len);
+        let travel = track_len.saturating_sub(metrics.thumb_len);
+        let col = x.saturating_sub(track.x) as usize;
+        buf.scroll_x = col
+            .saturating_sub(metrics.thumb_len / 2)
+            .saturating_mul(metrics.max_offset)
+            .checked_div(travel)
+            .unwrap_or(0)
+            .min(metrics.max_offset);
+    }
+}
+
 fn mouse_scroll(model: &mut Model, a: &ui::Areas, x: u16, y: u16, delta: isize) -> Vec<Cmd> {
+    if a.scrollbar_x_track.height > 0 && rect_contains(a.scrollbar_x_track, x, y) {
+        let total = ui::editor::horizontal_content_len(model);
+        if let Some(buf) = model.active_buffer_mut() {
+            let viewport = a.scrollbar_x_track.width as usize;
+            let max = total.saturating_sub(viewport);
+            let step = (viewport / 3).max(1) as isize;
+            buf.scroll_x = (buf.scroll_x as isize + delta * step).clamp(0, max as isize) as usize;
+        }
+        return Vec::new();
+    }
     let over_scrollbar = a.scrollbar.width > 0 && rect_contains(a.scrollbar, x, y);
     if rect_contains(a.editor, x, y) || over_scrollbar {
         if let Some(buf) = model.active_buffer_mut() {
