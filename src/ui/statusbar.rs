@@ -65,7 +65,14 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model) {
     // pressing it gives no feedback at all, so there is no way to tell whether
     // the keypress even reached the app or whether a locked command is about
     // to fire (see `Action::Leader`).
-    let leader_seg = if model.leader { " LEADER " } else { "" };
+    let leader_seg = if model.leader {
+        let chord = model
+            .keybindings
+            .shortcut(crate::services::keybindings::Bindable::Leader);
+        format!(" LEADER ON · {chord} → next key ")
+    } else {
+        String::new()
+    };
 
     let total = area.width as usize;
     let rw = err_seg.chars().count()

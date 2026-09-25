@@ -133,14 +133,19 @@ pub fn resolve(keys: &Keybindings, key: KeyEvent, focus: Focus, unlock: bool) ->
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
     // User-editable command shortcuts (quit, save, copy, new file, ...) win first.
-    // The locked flag is resolved here: a locked command only fires while the
-    // leader (unlock) key is held, otherwise it returns `None` so the keystroke
-    // falls through to typing/motion below.
+    // A locked shortcut is ignored until the leader is armed. In the editor,
+    // an unmodified printable character then falls through as normal text input.
     if let Some(full) = keys.resolve_full(key, focus) {
-        if full.locked && !unlock {
+        if !full.locked || unlock {
+            return Some(full.action);
+        }
+        let printable_editor_key = focus == Focus::Editor
+            && !ctrl
+            && !key.modifiers.contains(KeyModifiers::ALT)
+            && matches!(key.code, KeyCode::Char(c) if !c.is_control());
+        if !printable_editor_key {
             return None;
         }
-        return Some(full.action);
     }
 
     match focus {
