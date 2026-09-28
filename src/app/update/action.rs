@@ -182,6 +182,20 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
             let (h, _) = editor_viewport(model);
             edit(model, |b| apply_motion(b, motion, extend, h))
         }
+        Action::HScroll(delta) => {
+            if model.focus != Focus::Editor {
+                return Vec::new();
+            }
+            let (_, viewport) = editor_viewport(model);
+            let total = ui::editor::horizontal_content_len(model);
+            if let Some(buf) = model.active_buffer_mut() {
+                let max = total.saturating_sub(viewport);
+                let step = (viewport / 3).max(1) as isize;
+                buf.scroll_x =
+                    (buf.scroll_x as isize + delta * step).clamp(0, max as isize) as usize;
+            }
+            Vec::new()
+        }
         Action::MoveLineUp => mutate(model, |b| b.move_lines(-1)),
         Action::MoveLineDown => mutate(model, |b| b.move_lines(1)),
         Action::Copy => {

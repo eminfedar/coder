@@ -9,8 +9,9 @@ use ratatui::widgets::{Block, Borders, Padding, Paragraph};
 use crate::app::model::Model;
 
 /// Draws the active toast (if any and not yet expired) centered along the bottom
-/// of the whole screen. `area` is the full frame.
-pub fn render(frame: &mut Frame, area: Rect, model: &Model) {
+/// of the whole screen. `area` is the full frame. When `avoid_row` is set, the
+/// toast moves above that row if its normal position would cover it.
+pub fn render(frame: &mut Frame, area: Rect, model: &Model, avoid_row: Option<u16>) {
     let Some(toast) = model.toast.as_ref() else {
         return;
     };
@@ -33,7 +34,16 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model) {
 
     // Centered horizontally, a couple of rows above the very bottom edge.
     let x = area.x + (area.width.saturating_sub(box_w)) / 2;
-    let y = area.y + area.height.saturating_sub(box_h + 1);
+    let mut y = area.y + area.height.saturating_sub(box_h + 1);
+    if let Some(row) = avoid_row
+        && row >= y
+        && row < y.saturating_add(box_h)
+    {
+        let above = row.saturating_sub(box_h + 1);
+        if above >= area.y {
+            y = above;
+        }
+    }
     let rect = Rect {
         x,
         y,

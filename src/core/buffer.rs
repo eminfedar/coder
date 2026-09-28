@@ -1,5 +1,6 @@
 //! Rope-based text buffer: cursor, selection, undo/redo, dirty flag.
 
+use std::cell::Cell;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -48,6 +49,10 @@ pub struct Buffer {
     /// highlighter stop as soon as the per-line parse state reconverges; a wide
     /// edit may have shifted lines, so the whole viewport tail is re-highlighted.
     dirty_wide: bool,
+    /// Cached longest source line; edits invalidate it through `version`.
+    max_line_len_cache: Cell<Option<(u64, usize)>>,
+    /// Cached document line-ending label; edits invalidate it through `version`.
+    line_ending_cache: Cell<Option<(u64, &'static str)>>,
     undo_stack: Vec<Edit>,
     redo_stack: Vec<Edit>,
 }
@@ -65,6 +70,8 @@ impl Buffer {
             version: 0,
             dirty_from: 0,
             dirty_wide: false,
+            max_line_len_cache: Cell::new(None),
+            line_ending_cache: Cell::new(None),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
         }
@@ -136,6 +143,21 @@ impl Buffer {
         len
     }
 
+    /// Character length of the longest line, excluding line endings.
+    pub fn max_line_len(&self) -> usize {
+        if let Some((version, len)) = self.max_line_len_cache.get()
+            && version == self.version
+        {
+            return len;
+        }
+        let len = (0..self.line_count())
+            .map(|line| self.line_len(line))
+            .max()
+            .unwrap_or(0);
+        self.max_line_len_cache.set(Some((self.version, len)));
+        len
+    }
+
     pub fn line_text(&self, line: usize) -> String {
         if line >= self.rope.len_lines() {
             return String::new();
@@ -150,6 +172,35 @@ impl Buffer {
 
     pub fn full_text(&self) -> String {
         self.rope.to_string()
+    }
+
+    /// Returns the document's line-ending style, or an empty string when the
+    /// document has no line breaks. The result is cached for the current buffer
+    /// version so rendering the status bar does not repeatedly scan the file.
+    pub fn line_ending_label(&self) -> &'static str {
+        if let Some((version, label)) = self.line_ending_cache.get()
+            && version == self.version
+        {
+            return label;
+        }
+
+        let mut detected = None;
+        for line in 0..self.rope.len_lines() {
+            let ending = self.line_ending(line);
+            if ending.is_empty() {
+                continue;
+            }
+            let label = if ending == "\r\n" { "CRLF" } else { "LF" };
+            if detected.is_some_and(|previous| previous != label) {
+                self.line_ending_cache.set(Some((self.version, "Mixed")));
+                return "Mixed";
+            }
+            detected = Some(label);
+        }
+
+        let label = detected.unwrap_or("");
+        self.line_ending_cache.set(Some((self.version, label)));
+        label
     }
 
     /// The terminator that ends `line` in the rope: `"\r\n"`, `"\n"`, or `""`
@@ -1061,6 +1112,29 @@ mod tests {
         assert_eq!(b.utf16_to_char_col(0, 4), 3);
         // Out-of-range utf16 clamps to line end.
         assert_eq!(b.utf16_to_char_col(0, 99), 3);
+    }
+
+    #[test]
+    fn detects_and_caches_document_line_endings() {
+        let crlf = Buffer::new(None, "one\r\ntwo\r\n");
+        assert_eq!(crlf.line_ending_label(), "CRLF");
+
+        let lf = Buffer::new(None, "one\ntwo\n");
+        assert_eq!(lf.line_ending_label(), "LF");
+
+        let mixed = Buffer::new(None, "one\r\ntwo\n");
+        assert_eq!(mixed.line_ending_label(), "Mixed");
+
+        let no_breaks = Buffer::new(None, "one");
+        assert_eq!(no_breaks.line_ending_label(), "");
+    }
+
+    #[test]
+    fn line_ending_label_refreshes_after_edit() {
+        let mut buffer = Buffer::new(None, "one\r\ntwo\r\n");
+        assert_eq!(buffer.line_ending_label(), "CRLF");
+        buffer.replace_all("one\ntwo\n");
+        assert_eq!(buffer.line_ending_label(), "LF");
     }
 
     #[test]

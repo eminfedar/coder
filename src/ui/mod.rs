@@ -30,6 +30,8 @@ pub struct Areas {
     pub editor: Rect,
     /// Editor scrollbar column (rightmost); zero width when there's no room.
     pub scrollbar: Rect,
+    /// Horizontal track, excluding the gutter and vertical-scrollbar corner.
+    pub scrollbar_x_track: Rect,
     pub terminal: Rect,
     pub terminal_open: bool,
     /// y coordinate of the terminal top edge (drag-resize handle).
@@ -41,6 +43,7 @@ pub struct Areas {
 }
 
 pub const ACTIVITY_WIDTH: u16 = 4;
+pub const SCROLLBAR_WIDTH: u16 = 1;
 
 /// Gutter width based on the active buffer's line count.
 pub fn gutter_width(model: &Model) -> u16 {
@@ -48,6 +51,18 @@ pub fn gutter_width(model: &Model) -> u16 {
     // One extra column for the git change marker when the file is tracked.
     let git = if model.git_gutter() { 1 } else { 0 };
     (digits + 2).max(4) + git
+}
+
+fn needs_hscrollbar(model: &Model, full_width: u16, gutter_w: u16) -> bool {
+    let vertical_w = if full_width > gutter_w + SCROLLBAR_WIDTH {
+        SCROLLBAR_WIDTH
+    } else {
+        0
+    };
+    let text_w = full_width
+        .saturating_sub(gutter_w)
+        .saturating_sub(vertical_w) as usize;
+    editor::horizontal_content_len(model) > text_w
 }
 
 /// Computes the layout. view() and mouse routing use the same result.
@@ -93,20 +108,52 @@ pub fn compute_areas(model: &Model, area: Rect) -> Areas {
 
     let gutter_w = gutter_width(model);
 
-    // Reserve the rightmost column for the scrollbar when there is room.
-    let (editor, scrollbar) = if editor_full.width > gutter_w + 1 {
-        let [e, sb] =
-            Layout::horizontal([Constraint::Min(1), Constraint::Length(1)]).areas(editor_full);
+    // Add a bottom horizontal-scroll row only when content extends beyond the
+    // editor's text width and there's enough height to keep one row visible.
+    let (editor_body, scrollbar_x) =
+        if editor_full.height > 1 && needs_hscrollbar(model, editor_full.width, gutter_w) {
+            let [body, horizontal] =
+                Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(editor_full);
+            (body, horizontal)
+        } else {
+            (
+                editor_full,
+                Rect {
+                    height: 0,
+                    ..editor_full
+                },
+            )
+        };
+
+    // Preserve the upstream vertical scrollbar geometry inside the editor body.
+    let (editor, scrollbar) = if editor_body.width > gutter_w + SCROLLBAR_WIDTH {
+        let [e, sb] = Layout::horizontal([Constraint::Min(1), Constraint::Length(SCROLLBAR_WIDTH)])
+            .areas(editor_body);
         (e, sb)
     } else {
         (
-            editor_full,
+            editor_body,
             Rect {
                 width: 0,
-                ..editor_full
+                ..editor_body
             },
         )
     };
+
+    let scrollbar_x_track =
+        if scrollbar_x.height > 0 && scrollbar_x.width > gutter_w + scrollbar.width {
+            Rect {
+                x: scrollbar_x.x + gutter_w,
+                width: scrollbar_x.width - gutter_w - scrollbar.width,
+                ..scrollbar_x
+            }
+        } else {
+            Rect {
+                width: 0,
+                height: 0,
+                ..scrollbar_x
+            }
+        };
 
     let editor_text_x = editor.x + gutter_w;
 
@@ -118,6 +165,7 @@ pub fn compute_areas(model: &Model, area: Rect) -> Areas {
         tabs,
         editor,
         scrollbar,
+        scrollbar_x_track,
         terminal,
         terminal_open: model.layout.terminal_open,
         terminal_border_y: terminal.y,
@@ -144,6 +192,9 @@ pub fn view(frame: &mut Frame, model: &Model) {
     if a.scrollbar.width > 0 {
         editor::render_scrollbar(frame, a.scrollbar, model);
     }
+    if a.scrollbar_x_track.height > 0 {
+        editor::render_hscrollbar(frame, a.scrollbar_x_track, model);
+    }
     // The find widget floats over the top-right of the editor.
     find::render(frame, a.editor, model);
     // The completion popup floats at the cursor.
@@ -169,5 +220,10 @@ pub fn view(frame: &mut Frame, model: &Model) {
     }
 
     // Toast floats bottom-center over everything.
-    toast::render(frame, area, model);
+    toast::render(
+        frame,
+        area,
+        model,
+        (a.scrollbar_x_track.height > 0).then_some(a.scrollbar_x_track.y),
+    );
 }
