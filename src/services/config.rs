@@ -124,13 +124,68 @@ pub fn seed() -> Config {
     }
 }
 
-/// Path of the config file: `$CODER_CONFIG` override, else `~/.config/coder/config.toml`.
+/// Path of the config file: `$CODER_CONFIG` override, else the platform's
+/// per-user configuration directory. On Windows, an existing Unix-style
+/// `~/.config/coder` directory is preferred so users keep files created by
+/// older builds; new installs use `%APPDATA%\\coder`.
 pub fn config_path() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("CODER_CONFIG") {
+    if let Some(p) = std::env::var_os("CODER_CONFIG") {
         return Some(PathBuf::from(p));
     }
-    let home = std::env::var("HOME").ok()?;
-    Some(PathBuf::from(home).join(".config/coder/config.toml"))
+
+    #[cfg(windows)]
+    {
+        // Older Windows builds used HOME when it was provided by the shell.
+        // Keep that location if either settings file already exists there.
+        for name in ["HOME", "USERPROFILE"] {
+            if let Some(home) = nonempty_env_path(name) {
+                let dir = home.join(".config").join("coder");
+                if dir.join("config.toml").is_file() || dir.join("keybindings.toml").is_file() {
+                    return Some(dir.join("config.toml"));
+                }
+            }
+        }
+
+        if let Some(appdata) = nonempty_env_path("APPDATA") {
+            return Some(appdata.join("coder").join("config.toml"));
+        }
+
+        // Some launchers omit APPDATA while still providing LOCALAPPDATA.
+        // Keep the files in the user's profile rather than failing to open them.
+        if let Some(local_appdata) = nonempty_env_path("LOCALAPPDATA") {
+            return Some(local_appdata.join("coder").join("config.toml"));
+        }
+
+        // USERPROFILE is usually set by Windows, but some launchers provide
+        // only LOCALAPPDATA or HOME.
+        if let Some(home) = nonempty_env_path("USERPROFILE").or_else(|| nonempty_env_path("HOME")) {
+            return Some(home.join(".config").join("coder").join("config.toml"));
+        }
+
+        // Last resort for restricted launch environments: Windows normally
+        // places the user's temp directory below AppData/Local/Temp. Recover
+        // the roaming config directory from that path when possible.
+        let temp = std::env::temp_dir();
+        if let Some(appdata) = temp.ancestors().find(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("AppData"))
+        }) {
+            return Some(appdata.join("Roaming").join("coder").join("config.toml"));
+        }
+
+        // Ensure config and keybindings remain available in portable/restricted
+        // environments whose temp directory is outside the user profile.
+        return Some(temp.join("coder").join("config.toml"));
+    }
+
+    #[cfg(not(windows))]
+    nonempty_env_path("HOME").map(|home| home.join(".config/coder/config.toml"))
+}
+
+fn nonempty_env_path(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
 }
 
 /// Parses config text. Unknown scalar keys are ignored; every table becomes a
@@ -189,7 +244,10 @@ pub fn parse(text: &str) -> Config {
 /// costs the user their language sections.
 pub fn load_checked() -> (Config, Option<String>) {
     let Some(path) = config_path() else {
-        return (Config::default(), None);
+        return (
+            Config::default(),
+            Some("no config path available (set CODER_CONFIG or a home directory)".to_string()),
+        );
     };
     match std::fs::read_to_string(&path) {
         Ok(text) => match text.parse::<toml::Table>() {
@@ -201,8 +259,13 @@ pub fn load_checked() -> (Config, Option<String>) {
         },
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let seed = seed();
-            save(&seed);
-            (seed, None)
+            match save(&seed) {
+                Ok(()) => (seed, None),
+                Err(e) => (
+                    seed,
+                    Some(format!("could not create {}: {e}", path.display())),
+                ),
+            }
         }
         Err(e) => (Config::default(), Some(format!("{}: {e}", path.display()))),
     }
@@ -243,24 +306,27 @@ pub fn to_toml(config: &Config) -> String {
     toml::to_string_pretty(&table).unwrap_or_default()
 }
 
-/// Writes the config to disk (creating the parent directory). Errors are ignored.
+/// Writes the config to disk (creating the parent directory).
 ///
 /// Never clobbers what it doesn't understand: when the existing file can't be
 /// read or isn't valid TOML (a hand-edit in progress), nothing is written; and
 /// top-level keys already in the file that `config` doesn't carry (a section
 /// that failed to parse as a language, a setting from a newer version) are
 /// kept as they are.
-pub fn save(config: &Config) {
-    let Some(path) = config_path() else {
-        return;
-    };
-    let Some(text) = merged_toml(config, &path) else {
-        return;
-    };
+pub fn save(config: &Config) -> std::io::Result<()> {
+    let path = config_path().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "no config path available")
+    })?;
+    let text = merged_toml(config, &path).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "config is unreadable or invalid TOML; refusing to overwrite it",
+        )
+    })?;
     if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
+        std::fs::create_dir_all(dir)?;
     }
-    let _ = crate::services::fs::write_atomic(&path, text.as_bytes());
+    crate::services::fs::write_atomic(&path, text.as_bytes())
 }
 
 /// The text [`save`] would write to `path`, or `None` if writing would destroy

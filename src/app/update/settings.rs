@@ -22,7 +22,10 @@ pub(super) fn config_file(model: &mut Model) -> Option<PathBuf> {
         return None;
     };
     if !path.exists() {
-        crate::services::config::save(&model.config_snapshot());
+        if let Err(e) = crate::services::config::save(&model.config_snapshot()) {
+            model.notify(format!("Could not create {}: {e}", path.display()));
+            return None;
+        }
     }
     Some(path)
 }
@@ -35,7 +38,10 @@ pub(super) fn keybindings_file(model: &mut Model) -> Option<PathBuf> {
         return None;
     };
     if !path.exists() {
-        crate::services::keybindings::save(&model.keybindings);
+        if let Err(e) = crate::services::keybindings::save(&model.keybindings) {
+            model.notify(format!("Could not create {}: {e}", path.display()));
+            return None;
+        }
     }
     Some(path)
 }

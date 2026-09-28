@@ -710,11 +710,14 @@ pub fn execute(cmd: Cmd, root: PathBuf, tx: UnboundedSender<Msg>) {
             if let Ok(mut p) = PENDING.lock() {
                 *p = Some(config);
             }
-            tokio::task::spawn_blocking(|| {
+            let tx = tx.clone();
+            tokio::task::spawn_blocking(move || {
                 let _serial = WRITE.lock();
                 let latest = PENDING.lock().ok().and_then(|mut p| p.take());
                 if let Some(config) = latest {
-                    services::config::save(&config);
+                    if let Err(e) = services::config::save(&config) {
+                        let _ = tx.send(Msg::Toast(format!("Could not save config.toml: {e}")));
+                    }
                 }
             });
         }

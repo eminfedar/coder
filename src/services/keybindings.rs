@@ -487,6 +487,30 @@ impl Keybindings {
             })
     }
 
+    /// Returns the active, human-readable shortcut for a command.
+    pub fn shortcut(&self, binding: Bindable) -> String {
+        let Some((_, chord, locked)) = self.binds.iter().find(|(b, _, _)| *b == binding) else {
+            return String::new();
+        };
+        let label = chord
+            .to_chord_string()
+            .split('+')
+            .map(|part| {
+                let mut chars = part.chars();
+                match chars.next() {
+                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                    None => String::new(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("+");
+        if *locked {
+            format!("Leader + {label}")
+        } else {
+            label
+        }
+    }
+
     fn set(&mut self, b: Bindable, chord: Chord, locked: Option<bool>) {
         let default_locked = b.default_locked();
         if let Some(entry) = self.binds.iter_mut().find(|(x, _, _)| *x == b) {
@@ -580,15 +604,15 @@ pub fn to_toml(kb: &Keybindings) -> String {
     out
 }
 
-/// Writes the shortcuts to disk (creating the parent directory). Errors ignored.
-pub fn save(kb: &Keybindings) {
-    let Some(path) = keybindings_path() else {
-        return;
-    };
+/// Writes the shortcuts to disk (creating the parent directory).
+pub fn save(kb: &Keybindings) -> std::io::Result<()> {
+    let path = keybindings_path().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "no config path available")
+    })?;
     if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
+        std::fs::create_dir_all(dir)?;
     }
-    let _ = crate::services::fs::write_atomic(&path, to_toml(kb).as_bytes());
+    crate::services::fs::write_atomic(&path, to_toml(kb).as_bytes())
 }
 
 /// Loads the shortcuts, seeding the file with the defaults when it is missing so
@@ -603,7 +627,7 @@ pub fn load() -> Keybindings {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => Keybindings::default(),
         Err(_) => {
             let kb = Keybindings::default();
-            save(&kb);
+            let _ = save(&kb);
             kb
         }
     }
