@@ -13,15 +13,22 @@ use super::{content_rect, list_scroll, panel_area};
 /// Columns reserved at the right edge of a directory row for the
 /// "new file" / "new folder" buttons: `[icon][space][space][icon][space]`.
 const ACTION_COLS: usize = 5;
-/// A row narrower than this has no room for the action icons.
-const MIN_ACTION_WIDTH: usize = 8;
+/// Non-ASCII rows use two disclosure cells, a file icon and a separating space.
+const ROW_PREFIX_WIDTH: usize = 4;
+/// Minimum width that can hold the prefix, one name cell, and action buttons.
+const MIN_ACTION_WIDTH: usize = ROW_PREFIX_WIDTH + 1 + ACTION_COLS;
 
 /// Whether a directory row at tree `depth` has room for the right-edge
-/// new-file / new-folder buttons: indent + expander (2) + at least one name
+/// new-file / new-folder buttons: indent + tree prefix + at least one name
 /// cell + the buttons. Shared by `render` and `file_hit`, so a button that is
 /// not drawn (deep indent, narrow sidebar) is never clickable either.
-fn dir_buttons_fit(width: usize, depth: usize) -> bool {
-    width >= MIN_ACTION_WIDTH && width >= 2 * depth + 2 + 1 + ACTION_COLS
+fn row_prefix_width(ascii_icons: bool) -> usize {
+    if ascii_icons { 2 } else { ROW_PREFIX_WIDTH }
+}
+
+fn dir_buttons_fit(width: usize, depth: usize, ascii_icons: bool) -> bool {
+    let prefix_width = row_prefix_width(ascii_icons);
+    width >= prefix_width + 1 + ACTION_COLS && width >= 2 * depth + prefix_width + 1 + ACTION_COLS
 }
 
 /// What a click in the file tree landed on.
@@ -38,10 +45,10 @@ pub enum FileHit {
     NewFolderRoot,
 }
 
-/// (new file, new folder) button glyphs — codicons, or ASCII when `CODER_ASCII` is set.
+/// (new file, new folder) button glyphs — codicons, or plus signs in ASCII mode.
 fn action_icons(model: &Model) -> (&'static str, &'static str) {
     if model.ascii_icons {
-        ("f", "d")
+        ("+", "+")
     } else {
         ("\u{ea7f}", "\u{ea80}") // new-file, new-folder
     }
@@ -60,7 +67,7 @@ pub(super) fn render(frame: &mut Frame, area: Rect, model: &Model) {
         let selected = i == model.sidebar.files.selected;
         let is_active = !row.is_dir && active_path.as_deref() == Some(row.path.as_path());
         let indent = "  ".repeat(row.depth);
-        let icon = if row.is_dir {
+        let disclosure = if row.is_dir {
             if row.expanded { "▾ " } else { "▸ " }
         } else {
             "  "
@@ -82,12 +89,18 @@ pub(super) fn render(frame: &mut Frame, area: Rect, model: &Model) {
         };
         let mut spans = vec![
             Span::raw(indent.clone()),
-            Span::styled(icon, Style::new().fg(model.theme.fg_dim)),
+            Span::styled(disclosure, Style::new().fg(model.theme.fg_dim)),
         ];
+        if !model.ascii_icons {
+            let file_icon = crate::core::icons::file(&row.name, row.is_dir, row.expanded);
+            spans.push(Span::styled(file_icon, Style::new().fg(model.theme.fg_dim)));
+            spans.push(Span::raw(" "));
+        }
         // Directories get "new file" / "new folder" buttons pinned to the right edge.
         let width = area.width as usize;
-        if row.is_dir && dir_buttons_fit(width, row.depth) {
-            let avail = width.saturating_sub(indent.len() + 2 + ACTION_COLS);
+        if row.is_dir && dir_buttons_fit(width, row.depth, model.ascii_icons) {
+            let avail = width
+                .saturating_sub(indent.len() + row_prefix_width(model.ascii_icons) + ACTION_COLS);
             let (new_file, new_folder) = action_icons(model);
             spans.push(Span::styled(
                 format!("{:<avail$}", fit_name(&row.name, avail)),
@@ -216,7 +229,7 @@ pub fn file_hit(model: &Model, area: Rect, x: u16, y: u16) -> Option<FileHit> {
     let width = body.width as usize;
     let col = x.saturating_sub(body.x) as usize;
 
-    if row.is_dir && dir_buttons_fit(width, row.depth) {
+    if row.is_dir && dir_buttons_fit(width, row.depth, model.ascii_icons) {
         // Exact glyph columns only (mirrors `render`): file at width-ACTION_COLS,
         // folder at width-2. Clicking the gap between them falls through to Row.
         if col == width - 2 {
