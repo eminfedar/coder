@@ -28,6 +28,10 @@ pub(super) fn handle_mouse(model: &mut Model, m: MouseEvent) -> Vec<Cmd> {
                     ui::terminal::TerminalHit::New => super::terminal::new_terminal(model),
                 };
             }
+            // Status bar terminal button: same as Ctrl+J.
+            if rect_contains(ui::statusbar::terminal_button(model, a.statusbar), x, y) {
+                return apply_action(model, Action::ToggleTerminal);
+            }
             if a.terminal_open && y == a.terminal_border_y && x >= a.tabs.x {
                 model.drag = Some(DragTarget::TerminalBorder);
                 return Vec::new();

@@ -49,6 +49,17 @@ impl Theme {
         scale(self.bg_alt, 0.7)
     }
 
+    /// Background of an active status-bar button: the bar color pushed away from
+    /// `statusbar_fg` (darker under light text, lighter under dark text), so the
+    /// label keeps its color and stays readable.
+    pub fn statusbar_active_bg(&self) -> Color {
+        let light_fg = match self.statusbar_fg {
+            Color::Rgb(r, g, b) => r as u32 + g as u32 + b as u32 > 3 * 128,
+            _ => true,
+        };
+        scale(self.statusbar_bg, if light_fg { 0.7 } else { 1.3 })
+    }
+
     /// Background of the selected search result: panel background darkened 30%.
     pub fn selected_bg(&self) -> Color {
         scale(self.bg_alt, 0.7)
