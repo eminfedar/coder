@@ -72,11 +72,7 @@ pub(super) fn render(frame: &mut Frame, area: Rect, model: &Model) {
         } else {
             "  "
         };
-        let name_style = if row.is_dir {
-            Style::new().fg(model.theme.fg)
-        } else {
-            Style::new().fg(model.theme.fg_dim)
-        };
+        let name_style = Style::new().fg(model.theme.fg);
         // Selected row and the open file both get the darkened selection bg.
         let line_style = if selected {
             Style::new().bg(model.theme.selected_bg())
@@ -93,7 +89,12 @@ pub(super) fn render(frame: &mut Frame, area: Rect, model: &Model) {
         ];
         if !model.ascii_icons {
             let file_icon = crate::core::icons::file(&row.name, row.is_dir, row.expanded);
-            spans.push(Span::styled(file_icon, Style::new().fg(model.theme.fg_dim)));
+            // Language logos in their brand color, the rest dim.
+            let color = crate::core::icons::color(&row.name, row.is_dir);
+            spans.push(Span::styled(
+                file_icon,
+                Style::new().fg(color.unwrap_or(model.theme.fg_dim)),
+            ));
             spans.push(Span::raw(" "));
         }
         // Directories get "new file" / "new folder" buttons pinned to the right edge.
