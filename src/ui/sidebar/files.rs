@@ -2,7 +2,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
@@ -129,16 +129,29 @@ pub(super) fn render_header_actions(frame: &mut Frame, area: Rect, model: &Model
     if (row.width as usize) < MIN_ACTION_WIDTH {
         return;
     }
-    // Root directory name, filling the row (buttons are drawn on top, at right).
-    let dir_name = model
+    // Folder icon + root directory name in bold with a trailing `/`, filling
+    // the row (buttons are drawn on top, at right).
+    let mut dir_name = model
         .root
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| model.root.to_string_lossy().into_owned());
-    let name = Paragraph::new(Line::from(Span::styled(
-        dir_name,
-        Style::new().fg(model.theme.fg),
-    )));
+    if !dir_name.ends_with('/') {
+        dir_name.push('/');
+    }
+    // Folder icon: codicon like the buttons, the Files panel's emoji in ASCII mode.
+    let icon = if model.ascii_icons {
+        "📁"
+    } else {
+        "\u{ea83}"
+    };
+    let name = Paragraph::new(Line::from(vec![
+        Span::styled(format!("{icon} "), Style::new().fg(model.theme.fg_dim)),
+        Span::styled(
+            dir_name,
+            Style::new().fg(model.theme.fg).add_modifier(Modifier::BOLD),
+        ),
+    ]));
     frame.render_widget(name, row);
 
     let (new_file, new_folder) = action_icons(model);
