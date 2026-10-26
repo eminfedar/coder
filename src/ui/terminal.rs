@@ -77,21 +77,20 @@ pub fn hit(model: &Model, area: Rect, x: u16, y: u16) -> Option<TerminalHit> {
     None
 }
 
-/// Draws the tab strip over the top border row.
+/// Draws the tab strip over the top border row, on the sidebar background;
+/// the active tab has the active-tab background.
 fn render_tabs(buf: &mut ratatui::buffer::Buffer, area: Rect, model: &Model, focused: bool) {
     let th = &model.theme;
+    let bg = th.bg_alt;
     let right = area.x + area.width;
     let mut x = area.x;
     for (seg, _) in segments(model) {
         let parts: Vec<(String, Style)> = match seg {
-            Segment::Title => vec![(title(model), Style::new().fg(th.fg_dim))],
+            Segment::Title => vec![(title(model), Style::new().fg(th.fg_dim).bg(bg))],
             Segment::Tab(i) => {
                 let active = i == model.terminals.active;
-                let bg = if active {
-                    th.tab_active_bg
-                } else {
-                    th.tab_inactive_bg
-                };
+                // The active tab gets the editor's active-tab background.
+                let bg = if active { th.tab_active_bg } else { bg };
                 let mut label = Style::new().fg(th.fg).bg(bg);
                 if active {
                     label = label.add_modifier(Modifier::BOLD);
@@ -105,7 +104,7 @@ fn render_tabs(buf: &mut ratatui::buffer::Buffer, area: Rect, model: &Model, foc
                     ("│".to_string(), Style::new().fg(th.border).bg(bg)),
                 ]
             }
-            Segment::New => vec![(NEW.to_string(), Style::new().fg(th.fg_dim))],
+            Segment::New => vec![(NEW.to_string(), Style::new().fg(th.fg_dim).bg(bg))],
         };
         for (text, style) in parts {
             if x >= right {
@@ -126,8 +125,9 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model) {
     };
     let block = Block::new()
         .borders(Borders::TOP)
-        .border_style(Style::new().fg(border_color))
-        .style(Style::new().bg(Color::Rgb(20, 20, 20)));
+        // The top row (border + tab strip) uses the sidebar background.
+        .border_style(Style::new().fg(border_color).bg(model.theme.bg_alt))
+        .style(Style::new().bg(model.theme.bg_alt));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     render_tabs(frame.buffer_mut(), area, model, focused);
@@ -168,7 +168,7 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model) {
             }
             let mut style = Style::new()
                 .fg(conv_color(cell.fgcolor(), model.theme.fg))
-                .bg(conv_color(cell.bgcolor(), Color::Rgb(20, 20, 20)));
+                .bg(conv_color(cell.bgcolor(), model.theme.bg_alt));
             if cell.bold() {
                 style = style.add_modifier(Modifier::BOLD);
             }
