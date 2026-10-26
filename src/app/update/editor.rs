@@ -24,9 +24,9 @@ pub(super) fn edit(model: &mut Model, f: impl FnOnce(&mut Buffer)) -> Vec<Cmd> {
         // Editing invalidates any find matches: their char ranges were computed
         // against the old text and would index past the new (shorter) rope,
         // panicking char_to_line at render time. Recompute if the widget is
-        // open, otherwise just drop them.
+        // open (quietly: typing must not jump to a match), otherwise drop them.
         if model.find.open {
-            super::find::recompute_find(model);
+            super::find::sync_find(model);
         } else if !model.find.matches.is_empty() {
             model.find.matches.clear();
             model.find.current = None;

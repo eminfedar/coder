@@ -16,25 +16,63 @@ pub(super) fn open_find(model: &mut Model, replace: bool) -> Vec<Cmd> {
     if let Some(sel) = model.active_buffer().and_then(|b| b.selected_text())
         && !sel.is_empty()
         && !sel.contains('\n')
+        && sel != model.find.query.content()
     {
         model.find.query.set_content(sel);
+        invalidate_find(model);
     }
     // Place the caret at the end of each field's current text.
     model.find.query.cursor_to_end();
     model.find.replace.cursor_to_end();
     model.focus = Focus::Find;
-    recompute_find(model);
+    // Nothing is searched until the query is submitted (`find_step`).
     Vec::new()
 }
 
-/// Closes the find widget and returns focus to the editor.
+/// Closes the find widget and returns focus to the editor. Reopening it
+/// starts unsearched again.
 pub(super) fn close_find(model: &mut Model) {
     model.find.open = false;
+    model.find.searched = false;
     model.focus = Focus::Editor;
 }
 
-/// Recomputes match positions for the current query and selects the match at or
-/// after the cursor. Called whenever the query or the buffer changes.
+/// The query text changed: drop the matches of the previous query. The new
+/// one is searched only once it is submitted (Enter / next / prev).
+pub(super) fn invalidate_find(model: &mut Model) {
+    model.find.searched = false;
+    model.find.matches.clear();
+    model.find.current = None;
+    model.find.matches_key = active_find_key(model);
+}
+
+/// Submits the query: computes its matches and selects the first one after
+/// the cursor (`delta` > 0) or before it (`delta` < 0).
+fn submit_find(model: &mut Model, delta: isize) {
+    model.find.searched = true;
+    compute_matches(model);
+    if model.find.matches.is_empty() {
+        model.find.current = None;
+        return;
+    }
+    // Search from the start of a selection, so a query prefilled from the
+    // selected text finds that occurrence first.
+    let cur = model
+        .active_buffer()
+        .map(|b| b.selection_start_char_index())
+        .unwrap_or(0);
+    let m = &model.find.matches;
+    let idx = if delta < 0 {
+        m.iter().rposition(|(s, _)| *s < cur).unwrap_or(m.len() - 1)
+    } else {
+        m.iter().position(|(s, _)| *s >= cur).unwrap_or(0)
+    };
+    model.find.current = Some(idx);
+    find_select_current(model);
+}
+
+/// Recomputes match positions for the submitted query and selects the match at
+/// or after the cursor. Called after a replace rewrote the buffer.
 pub(super) fn recompute_find(model: &mut Model) {
     compute_matches(model);
     if model.find.matches.is_empty() {
@@ -64,6 +102,7 @@ fn compute_matches(model: &mut Model) {
     let key = active_find_key(model);
     let matches = model
         .active_buffer()
+        .filter(|_| model.find.searched)
         .map(|b| find_matches(&b.full_text(), model.find.query.content()))
         .unwrap_or_default();
     model.find.matches = matches;
@@ -124,7 +163,12 @@ fn find_select_current(model: &mut Model) {
 }
 
 /// Moves to the next (delta=1) / previous (delta=-1) match, wrapping around.
+/// The first step after the query changed submits it instead.
 pub(super) fn find_step(model: &mut Model, delta: isize) {
+    if !model.find.searched {
+        submit_find(model, delta);
+        return;
+    }
     let n = model.find.matches.len();
     if n == 0 {
         return;
@@ -138,6 +182,11 @@ pub(super) fn find_step(model: &mut Model, delta: isize) {
 pub(super) fn find_replace_one(model: &mut Model) -> Vec<Cmd> {
     if model.active_read_only() {
         return Vec::new(); // generated content (a commit patch) is never rewritten
+    }
+    // Not searched yet: the first press finds (and selects) the match to replace.
+    if !model.find.searched {
+        submit_find(model, 1);
+        return Vec::new();
     }
     let Some(i) = model.find.current else {
         return Vec::new();
@@ -178,6 +227,7 @@ pub(super) fn find_replace_all(model: &mut Model) -> Vec<Cmd> {
         model.invalidate_highlight();
     }
     model.notify(format!("{count} replaced"));
+    model.find.searched = true;
     recompute_find(model);
     Vec::new()
 }
@@ -258,5 +308,68 @@ mod find_tests {
             ("bar bar".to_string(), 2)
         );
         assert_eq!(replace_all_text("abc", "x", "y"), ("abc".to_string(), 0));
+    }
+}
+
+#[cfg(test)]
+mod find_flow_tests {
+    use super::*;
+    use crate::app::model::Tab;
+    use crossterm::event::KeyModifiers;
+
+    fn model_with(text: &str) -> Model {
+        let mut model = Model::new(std::env::temp_dir());
+        model
+            .tabs
+            .push(Tab::new(Buffer::new(Some("/w/a.rs".into()), text)));
+        model.active_tab = Some(0);
+        model
+    }
+
+    fn press(model: &mut Model, code: KeyCode) {
+        super::super::input::key(model, KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn typing_the_query_neither_searches_nor_selects_until_enter() {
+        let mut model = model_with("foo bar foo\n");
+        open_find(&mut model, false);
+        for c in "foo".chars() {
+            press(&mut model, KeyCode::Char(c));
+        }
+        assert!(model.find.matches.is_empty());
+        assert!(model.active_buffer().unwrap().selection_range().is_none());
+        assert_eq!(model.find.count_label(), "-/-");
+
+        press(&mut model, KeyCode::Enter);
+        assert_eq!(model.find.matches, vec![(0, 3), (8, 11)]);
+        assert_eq!(model.find.current, Some(0));
+        assert!(model.active_buffer().unwrap().selection_range().is_some());
+
+        press(&mut model, KeyCode::Enter);
+        assert_eq!(model.find.current, Some(1));
+
+        // Enter in the replace field replaces the current match, then the next.
+        open_find(&mut model, true);
+        model.find.field = FindField::Replace;
+        press(&mut model, KeyCode::Char('Z'));
+        press(&mut model, KeyCode::Enter);
+        assert_eq!(model.active_buffer().unwrap().full_text(), "foo bar Z\n");
+        assert_eq!(model.find.matches, vec![(0, 3)]);
+        assert_eq!(model.find.current, Some(0));
+        press(&mut model, KeyCode::Enter);
+        assert_eq!(model.active_buffer().unwrap().full_text(), "Z bar Z\n");
+        // Down only steps, it never replaces.
+        model.find.field = FindField::Query;
+        press(&mut model, KeyCode::Enter);
+        model.find.field = FindField::Replace;
+        press(&mut model, KeyCode::Down);
+        assert_eq!(model.active_buffer().unwrap().full_text(), "Z bar Z\n");
+
+        // Editing the query drops the old matches until the next Enter.
+        model.find.field = FindField::Query;
+        press(&mut model, KeyCode::Char('x'));
+        assert!(model.find.matches.is_empty());
+        assert_eq!(model.find.count_label(), "-/-");
     }
 }

@@ -80,6 +80,9 @@ pub enum Action {
 
     // Command palette / quickbar overlay
     OpenQuickbar,
+    /// Enter in the find widget: next match from the query field, replace +
+    /// next from the replace field.
+    FindSubmit,
     FindNext,
     FindPrev,
     FindToggleField,
@@ -161,7 +164,7 @@ fn resolve_find(key: KeyEvent, shift: bool) -> Option<Action> {
         KeyCode::Enter => Some(if shift {
             Action::FindPrev
         } else {
-            Action::FindNext
+            Action::FindSubmit
         }),
         // Up/Down step through matches (the inputs are single-line).
         KeyCode::Down => Some(Action::FindNext),

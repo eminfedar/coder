@@ -354,6 +354,15 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
         Action::OpenFind => open_find(model, false),
         Action::OpenFindReplace => open_find(model, true),
         Action::OpenQuickbar => open_quickbar(model),
+        Action::FindSubmit => {
+            // Enter in the replace field replaces the current match and moves
+            // on to the next; in the query field it finds the next match.
+            if model.find.replace_mode && model.find.field == FindField::Replace {
+                return find_replace_one(model);
+            }
+            find_step(model, 1);
+            Vec::new()
+        }
         Action::FindNext => {
             find_step(model, 1);
             Vec::new()

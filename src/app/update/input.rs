@@ -33,9 +33,9 @@ pub(super) fn key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
             InputOutcome::Ignored => {}
             InputOutcome::Moved => return Vec::new(),
             InputOutcome::Changed => {
-                // Live find: re-run matches when the query text changes.
+                // A changed find query waits for Enter before searching.
                 if model.focus == Focus::Find && model.find.field == FindField::Query {
-                    recompute_find(model);
+                    invalidate_find(model);
                 }
                 return Vec::new();
             }
@@ -94,7 +94,7 @@ pub(super) fn paste(model: &mut Model, text: String) -> Vec<Cmd> {
     if let Some((input, multiline)) = focused_input(model) {
         input.insert_paste(&text, multiline);
         if model.focus == Focus::Find && model.find.field == FindField::Query {
-            recompute_find(model);
+            invalidate_find(model);
         }
         return Vec::new();
     }

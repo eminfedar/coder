@@ -187,6 +187,11 @@ impl Buffer {
         self.cursor_to_char(self.cursor)
     }
 
+    /// Char index where the selection starts, or the cursor's when nothing is selected.
+    pub fn selection_start_char_index(&self) -> usize {
+        self.cursor_to_char(self.selection_range().map_or(self.cursor, |(s, _)| s))
+    }
+
     fn cursor_to_char(&self, c: Cursor) -> usize {
         let line = c.line.min(self.rope.len_lines().saturating_sub(1));
         let line_start = self.rope.line_to_char(line);

@@ -26,11 +26,19 @@ pub struct FindState {
     /// `(Tab::id, buffer version)` the matches were computed for: any other
     /// tab/version makes them stale (see `update::find::sync_find`).
     pub matches_key: Option<(usize, u64)>,
+    /// The query was submitted (Enter / next / prev): only then are `matches`
+    /// computed. Typing in the query clears it, so nothing is searched or
+    /// selected until the user asks for it.
+    pub searched: bool,
 }
 
 impl FindState {
-    /// "cur/total" indicator (1-based); "0/0" when there are no matches.
+    /// "cur/total" indicator (1-based); "0/0" when there are no matches, "-/-"
+    /// before the query has been submitted.
     pub fn count_label(&self) -> String {
+        if !self.searched {
+            return "-/-".to_string();
+        }
         let total = self.matches.len();
         let cur = self.current.map(|i| i + 1).unwrap_or(0);
         format!("{cur}/{total}")
