@@ -37,13 +37,21 @@ struct OutputState {
 pub struct PtySession {
     pub writer: Box<dyn Write + Send>,
     master: Box<dyn MasterPty + Send>,
-    _child: Box<dyn portable_pty::Child + Send + Sync>,
+    child: Box<dyn portable_pty::Child + Send + Sync>,
     output: Arc<OutputQueue>,
+}
+
+/// Closing a terminal tab drops its session: end the shell (and whatever it
+/// runs in the foreground) instead of leaving it behind.
+impl Drop for PtySession {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+    }
 }
 
 impl PtySession {
     /// Takes every byte the shell produced since the last call. Call on each
-    /// `Msg::PtyOutput` (a wake-up; its payload is always empty) and once
+    /// `Msg::PtyOutput` (a wake-up; it carries only the terminal id) and once
     /// right after storing the session from `Msg::PtyReady`, since output may
     /// have been announced before the session reached the Model.
     pub fn take_output(&self) -> Vec<u8> {
@@ -70,10 +78,29 @@ impl PtySession {
     }
 }
 
+/// The user's shell: `$SHELL`, else `/bin/sh`.
+fn shell_path() -> String {
+    std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
+}
+
+/// File name of the user's shell (`bash`), for terminal tab labels.
+pub fn shell_name() -> &'static str {
+    static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    NAME.get_or_init(|| {
+        let path = shell_path();
+        std::path::Path::new(&path)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or(path)
+    })
+}
+
 /// Opens a new PTY, starts the user's shell, and sets up the reader thread.
 /// Output is buffered in the session (see [`PtySession::take_output`]) and
-/// announced with an empty `Msg::PtyOutput`; closure is `Msg::PtyExited`.
+/// announced with an empty `Msg::PtyOutput(id)`; closure is `Msg::PtyExited(id)`.
+/// `id` names the terminal tab the session belongs to.
 pub fn spawn(
+    id: u64,
     cwd: std::path::PathBuf,
     rows: u16,
     cols: u16,
@@ -87,8 +114,7 @@ pub fn spawn(
         pixel_height: 0,
     })?;
 
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-    let mut cmd = CommandBuilder::new(shell);
+    let mut cmd = CommandBuilder::new(shell_path());
     cmd.cwd(cwd);
     cmd.env("TERM", "xterm-256color");
 
@@ -108,20 +134,20 @@ pub fn spawn(
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    if !push_output(&queue, &buf[..n], &tx) {
+                    if !push_output(&queue, &buf[..n], id, &tx) {
                         break;
                     }
                 }
                 Err(_) => break,
             }
         }
-        let _ = tx.send(Msg::PtyExited);
+        let _ = tx.send(Msg::PtyExited(id));
     });
 
     Ok(PtySession {
         writer,
         master: pair.master,
-        _child: child,
+        child,
         output,
     })
 }
@@ -129,7 +155,7 @@ pub fn spawn(
 /// Appends a read to the queue, waiting while the UI is [`MAX_PENDING_OUTPUT`]
 /// behind, and sends a wake-up unless one is already pending. `false` once
 /// the session is gone (dropped, or the channel closed): the reader stops.
-fn push_output(queue: &Arc<OutputQueue>, bytes: &[u8], tx: &UnboundedSender<Msg>) -> bool {
+fn push_output(queue: &Arc<OutputQueue>, bytes: &[u8], id: u64, tx: &UnboundedSender<Msg>) -> bool {
     let mut st = queue.state.lock().unwrap_or_else(|e| e.into_inner());
     while st.buf.len() >= MAX_PENDING_OUTPUT {
         // Only this thread holds the other reference once the session drops.
@@ -146,5 +172,5 @@ fn push_output(queue: &Arc<OutputQueue>, bytes: &[u8], tx: &UnboundedSender<Msg>
     let wake = !st.notified;
     st.notified = true;
     drop(st);
-    !wake || tx.send(Msg::PtyOutput).is_ok()
+    !wake || tx.send(Msg::PtyOutput(id)).is_ok()
 }

@@ -1,11 +1,121 @@
-//! Draws the embedded PTY terminal from the vt100 screen into ratatui cells.
+//! Draws the embedded PTY terminal from the vt100 screen into ratatui cells,
+//! with the terminal tab strip on the panel's top border row.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders};
 
+use unicode_width::UnicodeWidthStr;
+
 use crate::app::model::{Focus, Model};
+
+/// One piece of the tab strip, left to right.
+enum Segment {
+    Title,
+    /// Terminal tab `i`; its last two cells are the "✕ " close button.
+    Tab(usize),
+    /// The "+" new-terminal button.
+    New,
+}
+
+/// Target of a click on the terminal tab strip.
+pub enum TerminalHit {
+    Select(usize),
+    Close(usize),
+    New,
+}
+
+/// The terminal icon (Nerd Font glyph, `>_` in ASCII mode): the strip's title
+/// and the status bar's Terminal button.
+pub fn icon(model: &Model) -> &'static str {
+    if model.ascii_icons { ">_" } else { "\u{f489}" }
+}
+
+fn title(model: &Model) -> String {
+    format!(" {} ", icon(model))
+}
+const NEW: &str = " + ";
+
+fn tab_label(i: usize) -> String {
+    format!(" {} {} ", crate::services::pty::shell_name(), i + 1)
+}
+
+/// The strip's segments with their widths in cells: the single layout both
+/// `render` and `hit` walk, so clicks land on what is drawn.
+fn segments(model: &Model) -> Vec<(Segment, usize)> {
+    let mut out = vec![(Segment::Title, title(model).width())];
+    for i in 0..model.terminals.tabs.len() {
+        // label + "✕ " + "│"
+        out.push((Segment::Tab(i), tab_label(i).width() + 3));
+    }
+    out.push((Segment::New, NEW.width()));
+    out
+}
+
+/// Which tab / button of the strip (the panel's top row) is at (x, y).
+pub fn hit(model: &Model, area: Rect, x: u16, y: u16) -> Option<TerminalHit> {
+    if y != area.y || x < area.x || x >= area.x + area.width {
+        return None;
+    }
+    let x = x as usize;
+    let mut cursor = area.x as usize;
+    for (seg, w) in segments(model) {
+        if x >= cursor && x < cursor + w {
+            return match seg {
+                Segment::Title => None,
+                // "✕ " sits right before the trailing "│".
+                Segment::Tab(i) if x + 3 >= cursor + w && x + 1 < cursor + w => {
+                    Some(TerminalHit::Close(i))
+                }
+                Segment::Tab(i) => Some(TerminalHit::Select(i)),
+                Segment::New => Some(TerminalHit::New),
+            };
+        }
+        cursor += w;
+    }
+    None
+}
+
+/// Draws the tab strip over the top border row.
+fn render_tabs(buf: &mut ratatui::buffer::Buffer, area: Rect, model: &Model, focused: bool) {
+    let th = &model.theme;
+    let right = area.x + area.width;
+    let mut x = area.x;
+    for (seg, _) in segments(model) {
+        let parts: Vec<(String, Style)> = match seg {
+            Segment::Title => vec![(title(model), Style::new().fg(th.fg_dim))],
+            Segment::Tab(i) => {
+                let active = i == model.terminals.active;
+                let bg = if active {
+                    th.tab_active_bg
+                } else {
+                    th.tab_inactive_bg
+                };
+                let mut label = Style::new().fg(th.fg).bg(bg);
+                if active {
+                    label = label.add_modifier(Modifier::BOLD);
+                    if focused {
+                        label = label.fg(th.accent);
+                    }
+                }
+                vec![
+                    (tab_label(i), label),
+                    ("✕ ".to_string(), Style::new().fg(th.fg_dim).bg(bg)),
+                    ("│".to_string(), Style::new().fg(th.border).bg(bg)),
+                ]
+            }
+            Segment::New => vec![(NEW.to_string(), Style::new().fg(th.fg_dim))],
+        };
+        for (text, style) in parts {
+            if x >= right {
+                return;
+            }
+            let (end, _) = buf.set_stringn(x, area.y, &text, (right - x) as usize, style);
+            x = end;
+        }
+    }
+}
 
 pub fn render(frame: &mut Frame, area: Rect, model: &Model) {
     let focused = model.focus == Focus::Terminal;
@@ -17,18 +127,17 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model) {
     let block = Block::new()
         .borders(Borders::TOP)
         .border_style(Style::new().fg(border_color))
-        .title(" TERMINAL ")
-        .title_style(Style::new().fg(model.theme.fg_dim))
         .style(Style::new().bg(Color::Rgb(20, 20, 20)));
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    render_tabs(frame.buffer_mut(), area, model, focused);
 
     // vt100's visible grid already reflects the scrollback view position
     // (set via parser.set_scrollback in the update layer), so cell()/rows()/
     // cursor_position() all operate on what should be shown right now.
-    let screen = model.terminal.parser.screen();
+    let screen = model.terminals.active().parser.screen();
     let (rows, cols) = screen.size();
-    let selection = model.terminal.selection;
+    let selection = model.terminals.active().selection;
 
     // Reserve the rightmost inner column for the scrollbar. The PTY grid width
     // is kept one column narrower (see sync_terminal_size) so nothing is hidden.
@@ -85,7 +194,7 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model) {
 
     // Cursor — only while following the live bottom; when scrolled back into
     // history it would land on the wrong row.
-    if focused && model.terminal.scroll_offset == 0 && !screen.hide_cursor() {
+    if focused && model.terminals.active().scroll_offset == 0 && !screen.hide_cursor() {
         let (cr, cc) = screen.cursor_position();
         let x = inner.x + cc;
         let y = inner.y + cr;
@@ -104,12 +213,16 @@ fn render_scrollbar(buf: &mut ratatui::buffer::Buffer, inner: Rect, model: &Mode
         return;
     }
     let x = inner.x + inner.width - 1;
-    let rows = model.terminal.rows as usize;
-    let total = model.terminal.scrollback_lines + rows;
-    let offset = model.terminal.scroll_offset;
+    let rows = model.terminals.active().rows as usize;
+    let total = model.terminals.active().scrollback_lines + rows;
+    let offset = model.terminals.active().scroll_offset;
 
     // How many history rows sit above the top of the viewport.
-    let above = model.terminal.scrollback_lines.saturating_sub(offset);
+    let above = model
+        .terminals
+        .active()
+        .scrollback_lines
+        .saturating_sub(offset);
     let (thumb_start, thumb_end) = if total > rows && total > 0 {
         let ts = above * h / total;
         let tl = (rows * h / total).max(1);

@@ -50,22 +50,16 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
             Vec::new()
         }
         Action::ToggleTerminal => {
-            model.layout.terminal_open = !model.layout.terminal_open;
-            if model.layout.terminal_open {
-                model.focus = Focus::Terminal;
-                sync_terminal_size(model);
-                if model.terminal.session.is_none() && !model.terminal.spawn_requested {
-                    model.terminal.spawn_requested = true;
-                    return vec![Cmd::SpawnPty {
-                        rows: model.terminal.rows,
-                        cols: model.terminal.cols,
-                    }];
-                }
-            } else if model.focus == Focus::Terminal {
+            if !model.layout.terminal_open {
+                return super::terminal::open_terminal_panel(model);
+            }
+            model.layout.terminal_open = false;
+            if model.focus == Focus::Terminal {
                 model.focus = Focus::Editor;
             }
             Vec::new()
         }
+        Action::NewTerminal => super::terminal::new_terminal(model),
         Action::SelectPanel(p) => select_panel(model, p),
         Action::ShowShortcuts => open_keybindings(model),
         Action::Save => {
@@ -381,10 +375,11 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
             Vec::new()
         }
         Action::PtyInput(bytes) => {
-            if let Some(session) = model.terminal.session.as_mut() {
+            let term = model.terminals.active_mut();
+            if let Some(session) = term.session.as_mut() {
                 session.write(&bytes);
                 // Typing snaps the view back to the live bottom.
-                model.terminal.scroll_to(0);
+                term.scroll_to(0);
             }
             Vec::new()
         }
@@ -404,7 +399,7 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
                 // resting zone.
                 Focus::GitCommit => set_git_zone(model, GitZone::Files),
                 Focus::Terminal => {
-                    model.terminal.selection = None;
+                    model.terminals.active_mut().selection = None;
                 }
                 _ => {}
             }

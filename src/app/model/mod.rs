@@ -26,7 +26,7 @@ pub use sidebar::{
     GitStatus, GitZone, SearchField, SearchState, SettingsState, Sidebar, ThemesState,
 };
 pub use tab::{DiffRow, PreviewKey, Tab};
-pub use terminal::TerminalState;
+pub use terminal::{TerminalState, Terminals};
 
 use std::path::PathBuf;
 
@@ -41,7 +41,7 @@ pub struct Model {
     pub tabs: Vec<Tab>,
     pub active_tab: Option<usize>,
     pub sidebar: Sidebar,
-    pub terminal: TerminalState,
+    pub terminals: Terminals,
     pub layout: LayoutState,
     pub focus: Focus,
     pub should_quit: bool,
@@ -209,7 +209,7 @@ impl Model {
             },
             tabs: Vec::new(),
             active_tab: None,
-            terminal: TerminalState::new(),
+            terminals: Terminals::new(),
             layout: LayoutState::default(),
             focus: Focus::Sidebar,
             should_quit: false,

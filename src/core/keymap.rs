@@ -10,6 +10,8 @@ pub enum Action {
     Quit,
     ToggleSidebar,
     ToggleTerminal,
+    /// Open another terminal tab in the bottom panel (Ctrl+Shift+J).
+    NewTerminal,
     SelectPanel(Panel),
     Save,
     CloseTab,

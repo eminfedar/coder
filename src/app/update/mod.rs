@@ -179,10 +179,10 @@ fn dispatch(model: &mut Model, msg: Msg) -> Vec<Cmd> {
         Msg::SearchResults { query, matches } => search::search_results(model, query, matches),
         Msg::FilesListed { paths } => files_listed(model, paths),
         Msg::ReplaceDone { changed, count } => search::replace_done(model, changed, count),
-        Msg::PtyReady(session) => terminal::pty_ready(model, session),
+        Msg::PtyReady(id, session) => terminal::pty_ready(model, id, session),
         // Output is buffered in the PTY session and drained there.
-        Msg::PtyOutput => terminal::pty_output(model),
-        Msg::PtyExited => terminal::pty_exited(model),
+        Msg::PtyOutput(id) => terminal::pty_output(model, id),
+        Msg::PtyExited(id) => terminal::pty_exited(model, id),
         Msg::LspSessionReady { language, handle } => {
             model.lsp.starting.remove(&language);
             model.lsp.sessions.insert(language, handle);

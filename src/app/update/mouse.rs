@@ -14,6 +14,20 @@ pub(super) fn handle_mouse(model: &mut Model, m: MouseEvent) -> Vec<Cmd> {
                 model.drag = Some(DragTarget::SidebarBorder);
                 return Vec::new();
             }
+            // Terminal tab strip (on the panel's top row) before its resize handle.
+            if a.terminal_open
+                && let Some(hit) = ui::terminal::hit(model, a.terminal, x, y)
+            {
+                return match hit {
+                    ui::terminal::TerminalHit::Select(i) => {
+                        super::terminal::select_terminal(model, i)
+                    }
+                    ui::terminal::TerminalHit::Close(i) => {
+                        super::terminal::close_terminal(model, i)
+                    }
+                    ui::terminal::TerminalHit::New => super::terminal::new_terminal(model),
+                };
+            }
             if a.terminal_open && y == a.terminal_border_y && x >= a.tabs.x {
                 model.drag = Some(DragTarget::TerminalBorder);
                 return Vec::new();
@@ -32,7 +46,7 @@ pub(super) fn handle_mouse(model: &mut Model, m: MouseEvent) -> Vec<Cmd> {
             }
             // Terminal scrollbar (rightmost inner column of the terminal).
             if a.terminal_open
-                && model.terminal.session.is_some()
+                && model.terminals.active_mut().session.is_some()
                 && rect_contains(a.terminal, x, y)
                 && y > a.terminal.y
                 && x == a.terminal.x + a.terminal.width - 1
@@ -70,9 +84,9 @@ pub(super) fn handle_mouse(model: &mut Model, m: MouseEvent) -> Vec<Cmd> {
                 Some(DragTarget::Scrollbar) => scrollbar_jump(model, &a, y),
                 Some(DragTarget::TerminalScrollbar) => terminal_scrollbar_jump(model, &a, y),
                 Some(DragTarget::TerminalSelect) => {
-                    if let Some((sr, sc, _, _)) = model.terminal.selection {
+                    if let Some((sr, sc, _, _)) = model.terminals.active_mut().selection {
                         let (r, c) = terminal_cell(model, &a, x, y);
-                        model.terminal.selection = Some((sr, sc, r, c));
+                        model.terminals.active_mut().selection = Some((sr, sc, r, c));
                     }
                 }
                 None => {}
@@ -85,10 +99,9 @@ pub(super) fn handle_mouse(model: &mut Model, m: MouseEvent) -> Vec<Cmd> {
             // Selecting terminal text copies it to the clipboard immediately.
             // A plain click leaves a zero-span selection (start == end); only a
             // real drag across cells should copy.
-            let dragged =
-                matches!(model.terminal.selection, Some((r1, c1, r2, c2)) if (r1, c1) != (r2, c2));
+            let dragged = matches!(model.terminals.active_mut().selection, Some((r1, c1, r2, c2)) if (r1, c1) != (r2, c2));
             if was_terminal_select && dragged {
-                let text = model.terminal.selected_text();
+                let text = model.terminals.active_mut().selected_text();
                 if !text.is_empty() {
                     model.internal_clipboard = text.clone();
                     let toast = model.show_toast("Copied to clipboard");
@@ -99,6 +112,13 @@ pub(super) fn handle_mouse(model: &mut Model, m: MouseEvent) -> Vec<Cmd> {
         }
         // Middle-click anywhere on a tab closes it (like clicking its ✕).
         MouseEventKind::Down(MouseButton::Middle) => {
+            if a.terminal_open
+                && let Some(
+                    ui::terminal::TerminalHit::Select(i) | ui::terminal::TerminalHit::Close(i),
+                ) = ui::terminal::hit(model, a.terminal, x, y)
+            {
+                return super::terminal::close_terminal(model, i);
+            }
             if rect_contains(a.tabs, x, y)
                 && let Some(hit) = ui::tabs::tab_at(model, a.tabs, x, y)
             {
@@ -195,10 +215,10 @@ fn mouse_click(model: &mut Model, a: &ui::Areas, x: u16, y: u16) -> Vec<Cmd> {
     }
     if a.terminal_open && rect_contains(a.terminal, x, y) {
         model.focus = Focus::Terminal;
-        if model.terminal.session.is_some() && y > a.terminal.y {
+        if model.terminals.active_mut().session.is_some() && y > a.terminal.y {
             model.drag = Some(DragTarget::TerminalSelect);
             let (r, c) = terminal_cell(model, a, x, y);
-            model.terminal.selection = Some((r, c, r, c));
+            model.terminals.active_mut().selection = Some((r, c, r, c));
         }
         return Vec::new();
     }
@@ -464,7 +484,7 @@ fn mouse_scroll(model: &mut Model, a: &ui::Areas, x: u16, y: u16, delta: isize) 
         }
     } else if a.terminal_open && rect_contains(a.terminal, x, y) {
         // Wheel up (delta < 0) scrolls back into history (offset grows).
-        model.terminal.scroll_by(-delta);
+        model.terminals.active_mut().scroll_by(-delta);
     } else if a.sidebar_open && rect_contains(a.sidebar, x, y) {
         nav(model, delta.signum());
         // Scrolling through the Themes panel live-previews each theme the same
@@ -480,7 +500,7 @@ fn mouse_scroll(model: &mut Model, a: &ui::Areas, x: u16, y: u16, delta: isize) 
 /// terminal. The terminal has a 1-row top border and a 1-column scrollbar on
 /// the right, so the text area is inset accordingly.
 fn terminal_cell(model: &Model, a: &ui::Areas, x: u16, y: u16) -> (u16, u16) {
-    let (rows, cols) = model.terminal.parser.screen().size();
+    let (rows, cols) = model.terminals.active().parser.screen().size();
     let row = y
         .saturating_sub(a.terminal.y + 1)
         .min(rows.saturating_sub(1));
@@ -495,14 +515,18 @@ fn terminal_scrollbar_jump(model: &mut Model, a: &ui::Areas, y: u16) {
     if h == 0 {
         return;
     }
-    let rows = model.terminal.rows as usize;
-    let total = model.terminal.scrollback_lines + rows;
+    let rows = model.terminals.active_mut().rows as usize;
+    let total = model.terminals.active_mut().scrollback_lines + rows;
     let track_row = y.saturating_sub(a.terminal.y + 1) as usize;
     // Row in [0, total): top of the viewport we want.
-    let above = (track_row * total / h).min(model.terminal.scrollback_lines);
+    let above = (track_row * total / h).min(model.terminals.active_mut().scrollback_lines);
     // offset = history rows below the viewport top.
-    let offset = model.terminal.scrollback_lines.saturating_sub(above);
-    model.terminal.scroll_to(offset);
+    let offset = model
+        .terminals
+        .active_mut()
+        .scrollback_lines
+        .saturating_sub(above);
+    model.terminals.active_mut().scroll_to(offset);
 }
 
 #[cfg(test)]

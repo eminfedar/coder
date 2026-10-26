@@ -141,11 +141,11 @@ pub enum Msg {
     /// the Extensions panel's per-language status.
     ToolsChecked(Vec<(String, bool)>),
 
-    // Terminal
-    PtyReady(PtySession),
+    // Terminal (each carries the `TerminalState::id` of its terminal tab)
+    PtyReady(u64, PtySession),
     /// Wake-up: new output is buffered in the PTY session (`take_output`).
-    PtyOutput,
-    PtyExited,
+    PtyOutput(u64),
+    PtyExited(u64),
 
     Error(String),
     /// Show a transient toast notification.

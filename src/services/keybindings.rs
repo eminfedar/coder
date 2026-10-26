@@ -33,6 +33,7 @@ pub enum Bindable {
     Quit,
     ToggleSidebar,
     ToggleTerminal,
+    NewTerminal,
     CloseTab,
     Save,
     NextTab,
@@ -102,10 +103,11 @@ impl Scope {
 
 impl Bindable {
     /// Every command, in file order (also the TOML write order).
-    const ALL: [Bindable; 33] = [
+    const ALL: [Bindable; 34] = [
         Bindable::Quit,
         Bindable::ToggleSidebar,
         Bindable::ToggleTerminal,
+        Bindable::NewTerminal,
         Bindable::CloseTab,
         Bindable::Save,
         Bindable::NextTab,
@@ -144,6 +146,7 @@ impl Bindable {
             Bindable::Quit => "quit",
             Bindable::ToggleSidebar => "toggle_sidebar",
             Bindable::ToggleTerminal => "toggle_terminal",
+            Bindable::NewTerminal => "new_terminal",
             Bindable::CloseTab => "close_tab",
             Bindable::Save => "save",
             Bindable::NextTab => "next_tab",
@@ -201,6 +204,9 @@ impl Bindable {
             Bindable::Quit => "ctrl+q",
             Bindable::ToggleSidebar => "ctrl+b",
             Bindable::ToggleTerminal => "ctrl+j",
+            // Needs a terminal that reports Shift with Ctrl (kitty keyboard
+            // protocol); legacy ones send it as plain Ctrl+J.
+            Bindable::NewTerminal => "ctrl+shift+j",
             Bindable::CloseTab => "ctrl+w",
             Bindable::Save => "ctrl+s",
             Bindable::NextTab => "ctrl+tab",
@@ -254,6 +260,7 @@ impl Bindable {
             Bindable::Quit => Action::Quit,
             Bindable::ToggleSidebar => Action::ToggleSidebar,
             Bindable::ToggleTerminal => Action::ToggleTerminal,
+            Bindable::NewTerminal => Action::NewTerminal,
             Bindable::CloseTab => Action::CloseTab,
             Bindable::Save => Action::Save,
             Bindable::NextTab => Action::NextTab,
@@ -637,6 +644,26 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn ctrl_shift_j_opens_a_new_terminal_and_ctrl_j_still_toggles() {
+        let kb = Keybindings::default();
+        let cs = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+        // kitty protocol may report the letter as either case.
+        for c in ['j', 'J'] {
+            assert!(matches!(
+                kb.resolve(ev(KeyCode::Char(c), cs), Focus::Terminal),
+                Some(Action::NewTerminal)
+            ));
+        }
+        assert!(matches!(
+            kb.resolve(
+                ev(KeyCode::Char('j'), KeyModifiers::CONTROL),
+                Focus::Terminal
+            ),
+            Some(Action::ToggleTerminal)
+        ));
     }
 
     #[test]

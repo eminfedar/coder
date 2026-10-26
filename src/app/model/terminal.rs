@@ -1,8 +1,79 @@
-//! State of the embedded terminal (vt100 parser + PTY session + scrollback).
+//! State of the embedded terminals: one vt100 parser + PTY session +
+//! scrollback per terminal tab.
 
 use crate::services::pty::PtySession;
 
+/// The terminal tabs of the bottom panel. Never empty: closing the last tab
+/// leaves a fresh, not-yet-spawned terminal behind, so `active()` always works.
+pub struct Terminals {
+    pub tabs: Vec<TerminalState>,
+    pub active: usize,
+    next_id: u64,
+}
+
+impl Terminals {
+    pub(super) fn new() -> Self {
+        Terminals {
+            tabs: vec![TerminalState::new(0)],
+            active: 0,
+            next_id: 1,
+        }
+    }
+
+    pub fn active(&self) -> &TerminalState {
+        &self.tabs[self.active]
+    }
+
+    pub fn active_mut(&mut self) -> &mut TerminalState {
+        &mut self.tabs[self.active]
+    }
+
+    /// The terminal a PTY message belongs to; `None` once its tab was closed.
+    pub fn by_id_mut(&mut self, id: u64) -> Option<&mut TerminalState> {
+        self.tabs.iter_mut().find(|t| t.id == id)
+    }
+
+    pub fn index_of(&self, id: u64) -> Option<usize> {
+        self.tabs.iter().position(|t| t.id == id)
+    }
+
+    /// Appends a new (not yet spawned) terminal, makes it active and returns its
+    /// index. It starts at the active terminal's size.
+    pub fn push(&mut self) -> usize {
+        let (rows, cols) = (self.active().rows, self.active().cols);
+        let mut t = TerminalState::new(self.next_id);
+        self.next_id += 1;
+        t.resize(rows, cols);
+        self.tabs.push(t);
+        self.active = self.tabs.len() - 1;
+        self.active
+    }
+
+    /// Removes tab `i` (dropping its session kills the shell). Returns `true`
+    /// when it was the last one, which is replaced by a fresh terminal.
+    pub fn remove(&mut self, i: usize) -> bool {
+        if i >= self.tabs.len() {
+            return false;
+        }
+        let removed = self.tabs.remove(i);
+        if self.active > i || self.active >= self.tabs.len() {
+            self.active = self.active.saturating_sub(1);
+        }
+        if self.tabs.is_empty() {
+            let mut t = TerminalState::new(self.next_id);
+            self.next_id += 1;
+            t.resize(removed.rows, removed.cols);
+            self.tabs.push(t);
+            self.active = 0;
+            return true;
+        }
+        false
+    }
+}
+
 pub struct TerminalState {
+    /// Stable id: PTY messages carry it, since a tab index shifts on close.
+    pub id: u64,
     pub parser: vt100::Parser,
     pub session: Option<PtySession>,
     pub rows: u16,
@@ -30,8 +101,9 @@ pub struct TerminalState {
 const QUERIES: [&[u8]; 5] = [b"\x1b[6n", b"\x1b[?6n", b"\x1b[5n", b"\x1b[c", b"\x1b[0c"];
 
 impl TerminalState {
-    pub(super) fn new() -> Self {
+    pub(super) fn new(id: u64) -> Self {
         TerminalState {
+            id,
             parser: vt100::Parser::new(24, 80, 2000),
             session: None,
             rows: 24,
@@ -43,6 +115,7 @@ impl TerminalState {
             pending_query: Vec::new(),
         }
     }
+
     /// Feeds shell output to vt100 and returns the replies to the terminal
     /// queries in it (cursor position, status, device attributes), to be
     /// written back to the PTY. Each reply reflects the screen right at its
@@ -163,7 +236,7 @@ mod tests {
 
     #[test]
     fn cursor_position_query_is_answered_at_the_cursor() {
-        let mut t = TerminalState::new();
+        let mut t = TerminalState::new(0);
         // fzf: clear, then ask where the cursor is.
         let reply = t.process_output(b"ab\r\ncd\x1b[J\x1b[6n");
         assert_eq!(reply, b"\x1b[2;3R");
@@ -172,9 +245,25 @@ mod tests {
 
     #[test]
     fn query_split_across_reads_is_still_answered() {
-        let mut t = TerminalState::new();
+        let mut t = TerminalState::new(0);
         assert!(t.process_output(b"xy\x1b[").is_empty());
         assert_eq!(t.process_output(b"6nz"), b"\x1b[1;3R");
         assert_eq!(t.parser.screen().contents(), "xyz");
+    }
+
+    #[test]
+    fn closing_tabs_keeps_one_terminal_and_a_valid_active_index() {
+        let mut terms = Terminals::new();
+        terms.push();
+        terms.push();
+        assert_eq!(terms.active, 2);
+        assert!(!terms.remove(2));
+        assert_eq!(terms.active, 1);
+        assert!(!terms.remove(0));
+        assert_eq!(terms.active, 0);
+        let last = terms.active().id;
+        assert!(terms.remove(0), "removing the last tab reports it");
+        assert_eq!(terms.tabs.len(), 1);
+        assert_ne!(terms.active().id, last, "replaced by a fresh terminal");
     }
 }

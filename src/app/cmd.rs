@@ -74,7 +74,9 @@ pub enum Cmd {
         use_regex: bool,
         match_case: bool,
     },
+    /// Start the shell of terminal tab `id`.
     SpawnPty {
+        id: u64,
         rows: u16,
         cols: u16,
     },
@@ -598,14 +600,16 @@ pub fn execute(cmd: Cmd, root: PathBuf, tx: UnboundedSender<Msg>) {
                 let _ = tx.send(Msg::ReplaceDone { changed, count });
             });
         }
-        Cmd::SpawnPty { rows, cols } => {
+        Cmd::SpawnPty { id, rows, cols } => {
             tokio::task::spawn_blocking(move || {
-                match services::pty::spawn(root, rows, cols, tx.clone()) {
+                match services::pty::spawn(id, root, rows, cols, tx.clone()) {
                     Ok(session) => {
-                        let _ = tx.send(Msg::PtyReady(session));
+                        let _ = tx.send(Msg::PtyReady(id, session));
                     }
                     Err(e) => {
                         let _ = tx.send(Msg::Error(format!("could not start terminal: {e}")));
+                        // Drop the terminal tab that was waiting for this shell.
+                        let _ = tx.send(Msg::PtyExited(id));
                     }
                 }
             });

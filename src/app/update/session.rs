@@ -34,13 +34,7 @@ pub(super) fn restore(model: &mut Model) -> Vec<Cmd> {
     // `Action::ToggleTerminal` does when the user opens it by hand.
     if model.layout.terminal_open {
         super::terminal::sync_terminal_size(model);
-        if model.terminal.session.is_none() && !model.terminal.spawn_requested {
-            model.terminal.spawn_requested = true;
-            cmds.push(Cmd::SpawnPty {
-                rows: model.terminal.rows,
-                cols: model.terminal.cols,
-            });
-        }
+        cmds.extend(super::terminal::spawn_active_terminal(model));
     }
     for entry in snap.tabs {
         match entry.kind.as_str() {
