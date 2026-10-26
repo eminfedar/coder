@@ -4,6 +4,7 @@ mod config;
 mod find;
 mod gitmarks;
 mod highlighting;
+mod hscroll;
 mod lsp;
 mod overlay;
 mod panel;
@@ -113,6 +114,12 @@ pub struct Model {
     /// What `search_marks` was computed for: (tab, buffer version, query,
     /// use_regex, match_case). Recomputed only when one of them changes.
     search_marks_key: Option<(usize, u64, String, bool, bool)>,
+    /// Character width of the active tab's longest line (horizontal
+    /// scrollbar). See `refresh_max_line_width`.
+    pub active_max_cols: usize,
+    /// What `active_max_cols` was computed for: (tab id, buffer version,
+    /// woven deletion blocks).
+    active_max_cols_key: Option<(usize, u64, usize)>,
     /// Removed line blocks for the active diff tab's inline view: `(anchor, lines)`
     /// renders `lines` right after buffer line `anchor` (`None` = before line 0).
     /// Empty unless the active tab is a diff tab. Recomputed with `active_git_marks`.
@@ -238,6 +245,8 @@ impl Model {
             active_git_marks_tab: None,
             git_marks_dirty: false,
             search_marks: Vec::new(),
+            active_max_cols: 0,
+            active_max_cols_key: None,
             search_marks_key: None,
             active_deleted: Vec::new(),
             active_display: Vec::new(),

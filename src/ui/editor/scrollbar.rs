@@ -1,4 +1,5 @@
-//! Editor scrollbar: draggable thumb plus proportional git change marks.
+//! Editor scrollbars: the vertical one (draggable thumb plus proportional git
+//! change marks) and the horizontal one under the text.
 
 use std::collections::HashMap;
 
@@ -93,4 +94,37 @@ pub fn render_scrollbar(frame: &mut Frame, area: Rect, model: &Model) {
         lines.push(Line::from(span));
     }
     frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// Total columns the horizontal scrollbar spans for a `w`-cell text area: the
+/// longest line plus the caret cell past its end, and never less than the
+/// current view reaches. Shared with the mouse mapping (`update::mouse`).
+pub fn hscroll_extent(model: &Model, w: usize) -> usize {
+    let scroll_x = model.active_buffer().map_or(0, |b| b.scroll_x);
+    (model.active_max_cols + 1).max(scroll_x + w).max(1)
+}
+
+/// Renders the horizontal scrollbar (row under the editor text), styled like the
+/// vertical one: the thumb covers the visible columns of the longest line.
+pub fn render_hscrollbar(frame: &mut Frame, area: Rect, model: &Model) {
+    let th = &model.theme;
+    let w = area.width as usize;
+    if w == 0 {
+        return;
+    }
+    let scroll_x = model.active_buffer().map_or(0, |b| b.scroll_x);
+    let n = hscroll_extent(model, w);
+    let start = scroll_x * w / n;
+    let end = (start + (w * w / n).max(1)).min(w);
+    let spans: Vec<Span> = (0..w)
+        .map(|x| {
+            let bg = if (start..end).contains(&x) {
+                th.fg_dim
+            } else {
+                th.bg_alt
+            };
+            Span::styled(" ", Style::new().bg(bg))
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }

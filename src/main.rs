@@ -244,6 +244,7 @@ async fn run(
             model.refresh_highlight();
             model.refresh_git_marks();
             model.refresh_search_marks();
+            model.refresh_max_line_width();
             terminal.draw(|f| ui::view(f, &model))?;
             needs_draw = false;
             last_draw = std::time::Instant::now();

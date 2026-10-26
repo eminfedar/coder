@@ -29,7 +29,7 @@ use diagnostics::severity_rank;
 use overlays::{overlay_diagnostics, overlay_find_matches, overlay_selection};
 
 pub use diagnostics::{severity_color, severity_icon};
-pub use scrollbar::render_scrollbar;
+pub use scrollbar::{hscroll_extent, render_hscrollbar, render_scrollbar};
 
 /// Placeholder cell for characters that must not reach the terminal raw.
 const PLACEHOLDER: char = '\u{FFFD}';

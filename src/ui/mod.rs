@@ -30,6 +30,10 @@ pub struct Areas {
     pub editor: Rect,
     /// Editor scrollbar column (rightmost); zero width when there's no room.
     pub scrollbar: Rect,
+    /// Horizontal scrollbar row under the editor text (gutter excluded); zero
+    /// height unless a line is wider than the text area or the view is
+    /// scrolled sideways.
+    pub hscrollbar: Rect,
     pub terminal: Rect,
     pub terminal_open: bool,
     /// y coordinate of the terminal top edge (drag-resize handle).
@@ -108,6 +112,35 @@ pub fn compute_areas(model: &Model, area: Rect) -> Areas {
         )
     };
 
+    // A bottom row for the horizontal scrollbar while some line (plus the caret
+    // cell past its end) is wider than the text area, or the view is already
+    // scrolled sideways (so it can be scrolled back).
+    let text_w = editor.width.saturating_sub(gutter_w);
+    let scroll_x = model.active_buffer().map_or(0, |b| b.scroll_x);
+    let wide = model.active_max_cols + 1 > text_w as usize || scroll_x > 0;
+    let (editor, scrollbar, hscrollbar) = if wide && text_w > 0 && editor.height > 1 {
+        let shrink = |r: Rect| Rect {
+            height: r.height.saturating_sub(1),
+            ..r
+        };
+        let bar = Rect {
+            x: editor.x + gutter_w,
+            y: editor.y + editor.height - 1,
+            width: text_w,
+            height: 1,
+        };
+        (shrink(editor), shrink(scrollbar), bar)
+    } else {
+        (
+            editor,
+            scrollbar,
+            Rect {
+                height: 0,
+                ..editor
+            },
+        )
+    };
+
     let editor_text_x = editor.x + gutter_w;
 
     Areas {
@@ -118,6 +151,7 @@ pub fn compute_areas(model: &Model, area: Rect) -> Areas {
         tabs,
         editor,
         scrollbar,
+        hscrollbar,
         terminal,
         terminal_open: model.layout.terminal_open,
         terminal_border_y: terminal.y,
@@ -143,6 +177,9 @@ pub fn view(frame: &mut Frame, model: &Model) {
     editor::render(frame, a.editor, model, a.gutter_w);
     if a.scrollbar.width > 0 {
         editor::render_scrollbar(frame, a.scrollbar, model);
+    }
+    if a.hscrollbar.height > 0 {
+        editor::render_hscrollbar(frame, a.hscrollbar, model);
     }
     // The find widget floats over the top-right of the editor.
     find::render(frame, a.editor, model);

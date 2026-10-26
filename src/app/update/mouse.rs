@@ -48,6 +48,11 @@ pub(super) fn handle_mouse(model: &mut Model, m: MouseEvent) -> Vec<Cmd> {
                 scrollbar_jump(model, &a, y);
                 return Vec::new();
             }
+            if a.hscrollbar.height > 0 && rect_contains(a.hscrollbar, x, y) {
+                model.drag = Some(DragTarget::HScrollbar);
+                hscrollbar_jump(model, &a, x);
+                return Vec::new();
+            }
             // Terminal scrollbar (rightmost inner column of the terminal).
             if a.terminal_open
                 && model.terminals.active_mut().session.is_some()
@@ -86,6 +91,7 @@ pub(super) fn handle_mouse(model: &mut Model, m: MouseEvent) -> Vec<Cmd> {
                     ensure_cursor_visible(model);
                 }
                 Some(DragTarget::Scrollbar) => scrollbar_jump(model, &a, y),
+                Some(DragTarget::HScrollbar) => hscrollbar_jump(model, &a, x),
                 Some(DragTarget::TerminalScrollbar) => terminal_scrollbar_jump(model, &a, y),
                 Some(DragTarget::TerminalSelect) => {
                     if let Some((sr, sc, _, _)) = model.terminals.active_mut().selection {
@@ -153,8 +159,22 @@ pub(super) fn handle_mouse(model: &mut Model, m: MouseEvent) -> Vec<Cmd> {
             }
             Vec::new()
         }
+        // Shift+wheel, and the wheel over the horizontal scrollbar, scroll sideways.
+        MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
+            if m.modifiers.contains(crossterm::event::KeyModifiers::SHIFT)
+                || (a.hscrollbar.height > 0 && rect_contains(a.hscrollbar, x, y)) =>
+        {
+            let delta = if m.kind == MouseEventKind::ScrollDown {
+                6
+            } else {
+                -6
+            };
+            mouse_hscroll(model, &a, x, y, delta)
+        }
         MouseEventKind::ScrollDown => mouse_scroll(model, &a, x, y, 3),
         MouseEventKind::ScrollUp => mouse_scroll(model, &a, x, y, -3),
+        MouseEventKind::ScrollRight => mouse_hscroll(model, &a, x, y, 6),
+        MouseEventKind::ScrollLeft => mouse_hscroll(model, &a, x, y, -6),
         _ => Vec::new(),
     }
 }
@@ -445,6 +465,36 @@ fn sidebar_click(model: &mut Model, a: &ui::Areas, x: u16, y: u16) -> Vec<Cmd> {
     }
 }
 
+/// Scrolls the editor sideways by `delta` columns when the pointer is over the
+/// text or the horizontal scrollbar, within the scrollbar's extent.
+fn mouse_hscroll(model: &mut Model, a: &ui::Areas, x: u16, y: u16, delta: isize) -> Vec<Cmd> {
+    let over_bar = a.hscrollbar.height > 0 && rect_contains(a.hscrollbar, x, y);
+    if !rect_contains(a.editor, x, y) && !over_bar {
+        return Vec::new();
+    }
+    let w = a.editor.width.saturating_sub(a.gutter_w) as usize;
+    let max = ui::editor::hscroll_extent(model, w).saturating_sub(w);
+    if let Some(buf) = model.active_buffer_mut() {
+        buf.scroll_x = (buf.scroll_x as isize + delta).clamp(0, max as isize) as usize;
+    }
+    Vec::new()
+}
+
+/// Jumps the editor's horizontal scroll so the clicked column of the horizontal
+/// scrollbar is centered in the view (the vertical `scrollbar_jump`, sideways).
+fn hscrollbar_jump(model: &mut Model, a: &ui::Areas, x: u16) {
+    let w = a.hscrollbar.width as usize;
+    if w == 0 {
+        return;
+    }
+    let col = x.saturating_sub(a.hscrollbar.x) as usize;
+    let n = ui::editor::hscroll_extent(model, w);
+    let target = (col * n / w).saturating_sub(w / 2).min(n.saturating_sub(w));
+    if let Some(buf) = model.active_buffer_mut() {
+        buf.scroll_x = target;
+    }
+}
+
 /// Jumps the editor scroll so the clicked scrollbar row is centered in the viewport.
 fn scrollbar_jump(model: &mut Model, a: &ui::Areas, y: u16) {
     let h = a.scrollbar.height as usize;
@@ -559,5 +609,42 @@ mod mouse_scroll_tests {
             cmds.iter().any(|c| matches!(c, Cmd::SaveConfig(_))),
             "scrolling the Themes panel must persist the selection"
         );
+    }
+
+    #[test]
+    fn long_lines_get_a_draggable_horizontal_scrollbar() {
+        let mut model = Model::new(std::env::temp_dir());
+        model.term_size = (100, 30);
+        let long = format!("{}\nshort\n", "x".repeat(1000));
+        model.tabs.push(crate::app::model::Tab::new(Buffer::new(
+            Some("/w/a.rs".into()),
+            &long,
+        )));
+        model.active_tab = Some(0);
+        let area = full_rect(&model);
+        assert_eq!(ui::compute_areas(&model, area).hscrollbar.height, 0);
+
+        model.refresh_max_line_width();
+        let a = ui::compute_areas(&model, area);
+        let bar = a.hscrollbar;
+        assert_eq!(bar.height, 1);
+        assert_eq!(bar.y, a.editor.y + a.editor.height, "right under the text");
+        assert_eq!(bar.x, a.editor_text_x);
+
+        // Clicking the far right end scrolls to the end of the longest line.
+        let down = |x| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: x,
+            row: bar.y,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        };
+        handle_mouse(&mut model, down(bar.x + bar.width - 1));
+        let w = bar.width as usize;
+        assert_eq!(model.tabs[0].buffer.scroll_x, 1001 - w);
+        assert!(model.drag == Some(DragTarget::HScrollbar));
+
+        // Horizontal wheel scrolls back, never below 0.
+        mouse_hscroll(&mut model, &a, bar.x, bar.y, -10_000);
+        assert_eq!(model.tabs[0].buffer.scroll_x, 0);
     }
 }
