@@ -18,7 +18,16 @@ pub struct TerminalState {
     /// Active text selection in visible-grid coordinates:
     /// (start_row, start_col, end_row, end_col).
     pub selection: Option<(u16, u16, u16, u16)>,
+    /// Tail of the last output chunk that may be the start of a terminal query
+    /// split across reads; held back until the next chunk completes it.
+    pending_query: Vec<u8>,
 }
+
+/// Terminal queries vt100 does not answer itself. Programs that send one block
+/// until the reply arrives — fzf's Ctrl+R history widget asks for the cursor
+/// position (`CSI 6n`) before drawing, and otherwise waits on a blank screen,
+/// eating the next keystrokes as the "reply".
+const QUERIES: [&[u8]; 5] = [b"\x1b[6n", b"\x1b[?6n", b"\x1b[5n", b"\x1b[c", b"\x1b[0c"];
 
 impl TerminalState {
     pub(super) fn new() -> Self {
@@ -31,6 +40,55 @@ impl TerminalState {
             scroll_offset: 0,
             scrollback_lines: 0,
             selection: None,
+            pending_query: Vec::new(),
+        }
+    }
+    /// Feeds shell output to vt100 and returns the replies to the terminal
+    /// queries in it (cursor position, status, device attributes), to be
+    /// written back to the PTY. Each reply reflects the screen right at its
+    /// query, so the output before it is processed first.
+    pub fn process_output(&mut self, bytes: &[u8]) -> Vec<u8> {
+        let mut data = std::mem::take(&mut self.pending_query);
+        data.extend_from_slice(bytes);
+        let mut replies = Vec::new();
+        let mut start = 0;
+        let mut i = 0;
+        while i < data.len() {
+            if data[i] != 0x1b {
+                i += 1;
+                continue;
+            }
+            let rest = &data[i..];
+            if let Some(q) = QUERIES.iter().find(|q| rest.starts_with(q)) {
+                self.parser.process(&data[start..i]);
+                replies.extend(self.query_reply(q));
+                i += q.len();
+                start = i;
+                continue;
+            }
+            // An incomplete query at the very end: keep it for the next chunk.
+            if QUERIES
+                .iter()
+                .any(|q| q.len() > rest.len() && q.starts_with(rest))
+            {
+                self.parser.process(&data[start..i]);
+                self.pending_query = rest.to_vec();
+                return replies;
+            }
+            i += 1;
+        }
+        self.parser.process(&data[start..]);
+        replies
+    }
+
+    fn query_reply(&self, query: &[u8]) -> Vec<u8> {
+        let (row, col) = self.parser.screen().cursor_position();
+        match query {
+            b"\x1b[6n" => format!("\x1b[{};{}R", row + 1, col + 1).into_bytes(),
+            b"\x1b[?6n" => format!("\x1b[?{};{}R", row + 1, col + 1).into_bytes(),
+            b"\x1b[5n" => b"\x1b[0n".to_vec(),
+            // Primary device attributes: a VT102-class terminal.
+            _ => b"\x1b[?6c".to_vec(),
         }
     }
 
@@ -96,5 +154,27 @@ impl TerminalState {
         self.parser
             .screen()
             .contents_between(min_r, min_c, max_r, max_c)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cursor_position_query_is_answered_at_the_cursor() {
+        let mut t = TerminalState::new();
+        // fzf: clear, then ask where the cursor is.
+        let reply = t.process_output(b"ab\r\ncd\x1b[J\x1b[6n");
+        assert_eq!(reply, b"\x1b[2;3R");
+        assert!(t.process_output(b"plain text").is_empty());
+    }
+
+    #[test]
+    fn query_split_across_reads_is_still_answered() {
+        let mut t = TerminalState::new();
+        assert!(t.process_output(b"xy\x1b[").is_empty());
+        assert_eq!(t.process_output(b"6nz"), b"\x1b[1;3R");
+        assert_eq!(t.parser.screen().contents(), "xyz");
     }
 }

@@ -53,7 +53,8 @@ pub(super) fn pty_exited(model: &mut Model) -> Vec<Cmd> {
     Vec::new()
 }
 
-/// Feeds everything the PTY buffered since the last drain to the vt100 parser.
+/// Feeds everything the PTY buffered since the last drain to the vt100 parser,
+/// answering the terminal queries in it.
 fn drain_pty_output(model: &mut Model) {
     let bytes = model
         .terminal
@@ -61,7 +62,12 @@ fn drain_pty_output(model: &mut Model) {
         .as_ref()
         .map(|s| s.take_output())
         .unwrap_or_default();
-    model.terminal.parser.process(&bytes);
+    let replies = model.terminal.process_output(&bytes);
+    if !replies.is_empty()
+        && let Some(session) = model.terminal.session.as_mut()
+    {
+        session.write(&replies);
+    }
     // Refresh scrollback bounds and re-anchor the view after vt100 has
     // appended any new rows.
     model.terminal.sync_scroll_bounds();
