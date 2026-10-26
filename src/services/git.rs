@@ -385,17 +385,9 @@ pub fn head_file(path: &Path) -> Option<String> {
 /// Per-line gutter markers for the difference between `old` (HEAD) and `new` (buffer).
 /// Pure (no IO): computes the diff in memory, safe to call from `update`.
 pub fn gutter_marks(old: &str, new: &str) -> Vec<(usize, GutterKind)> {
-    let mut opts = git2::DiffOptions::new();
-    opts.context_lines(0);
-    let patch = match git2::Patch::from_buffers(
-        old.as_bytes(),
-        None,
-        new.as_bytes(),
-        None,
-        Some(&mut opts),
-    ) {
-        Ok(p) => p,
-        Err(_) => return Vec::new(),
+    let (old, new) = (eol_terminated(old), eol_terminated(new));
+    let Some(patch) = line_patch(&old, &new) else {
+        return Vec::new();
     };
     let mut marks: std::collections::HashMap<usize, GutterKind> = std::collections::HashMap::new();
     for h in 0..patch.num_hunks() {
@@ -418,22 +410,34 @@ pub fn gutter_marks(old: &str, new: &str) -> Vec<(usize, GutterKind)> {
     marks.into_iter().collect()
 }
 
+/// Zero-context line diff of `old` -> `new` for the change gutter / inline diff.
+/// Pass both sides through [`eol_terminated`] first.
+fn line_patch<'a>(old: &'a str, new: &'a str) -> Option<git2::Patch<'a>> {
+    let mut opts = git2::DiffOptions::new();
+    opts.context_lines(0);
+    git2::Patch::from_buffers(old.as_bytes(), None, new.as_bytes(), None, Some(&mut opts)).ok()
+}
+
+/// `s` with a trailing newline. The change gutter compares both sides this way:
+/// otherwise deleting the last line (`"a\nb\nc"` -> `"a\nb"`) turns the line
+/// above it from `"b\n"` into `"b"`, and that untouched line would show as
+/// removed + re-added.
+fn eol_terminated(s: &str) -> std::borrow::Cow<'_, str> {
+    if s.is_empty() || s.ends_with('\n') {
+        s.into()
+    } else {
+        format!("{s}\n").into()
+    }
+}
+
 /// Removed line blocks for an inline diff view. Each entry is `(anchor, lines)`:
 /// the removed `lines` render right after buffer line `anchor` (`None` = before
 /// the first line). Includes the old side of modifications so replaced code is
 /// shown alongside the new lines. Pure (no IO).
 pub fn deleted_blocks(old: &str, new: &str) -> Vec<(Option<usize>, Vec<String>)> {
-    let mut opts = git2::DiffOptions::new();
-    opts.context_lines(0);
-    let patch = match git2::Patch::from_buffers(
-        old.as_bytes(),
-        None,
-        new.as_bytes(),
-        None,
-        Some(&mut opts),
-    ) {
-        Ok(p) => p,
-        Err(_) => return Vec::new(),
+    let (old, new) = (eol_terminated(old), eol_terminated(new));
+    let Some(patch) = line_patch(&old, &new) else {
+        return Vec::new();
     };
     let old_lines: Vec<&str> = old.lines().collect();
     let mut out = Vec::new();
@@ -800,6 +804,19 @@ mod tests {
         // "b" -> "B": the old "b" is a removed row before the new "B".
         let d = deleted_blocks("a\nb\nc\n", "a\nB\nc\n");
         assert_eq!(d, vec![(Some(0), vec!["b".to_string()])]);
+    }
+
+    #[test]
+    fn deleting_the_last_line_leaves_the_line_above_unchanged() {
+        // Without a trailing newline on one side, "b\n" vs "b" used to diff as
+        // a modification, painting the untouched "b" as deleted too.
+        for old in ["a\nb\nc\n", "a\nb\nc"] {
+            assert_eq!(kinds(old, "a\nb"), vec![(1, GutterKind::Deleted)]);
+            assert_eq!(
+                deleted_blocks(old, "a\nb"),
+                vec![(Some(1), vec!["c".to_string()])]
+            );
+        }
     }
 
     #[test]
