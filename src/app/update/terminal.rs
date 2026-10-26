@@ -4,7 +4,7 @@ use super::*;
 use crate::app::model::TerminalState;
 
 /// Forwards a bracketed paste straight to the PTY as raw bytes, in one write
-/// instead of one `Action::PtyInput` per character — the shell/program inside
+/// instead of one `Action::PtyKey` per character — the shell/program inside
 /// doesn't care about auto-indent the way the code editor does, so no
 /// reindenting is needed here, just delivering it atomically.
 pub(super) fn paste_into_terminal(model: &mut Model, text: &str) -> Vec<Cmd> {

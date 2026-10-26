@@ -89,8 +89,8 @@ pub enum Action {
     FindPrev,
     FindToggleField,
 
-    // Terminal raw input
-    PtyInput(Vec<u8>),
+    /// A key for the focused terminal, encoded for the PTY in `update`.
+    PtyKey(KeyEvent),
 
     /// Toggle the "leader" state: the next locked command fires directly instead
     /// of waiting for an explicit unlock (a nested/leader-key command mode).
@@ -141,7 +141,12 @@ pub fn resolve(keys: &Keybindings, key: KeyEvent, focus: Focus, unlock: bool) ->
     // The locked flag is resolved here: a locked command only fires while the
     // leader (unlock) key is held, otherwise it returns `None` so the keystroke
     // falls through to typing/motion below.
-    if let Some(full) = keys.resolve_full(key, focus) {
+    // A focused terminal gets every other key (htop's F10, a shell's Ctrl+W,
+    // ...): only the terminal panel's own shortcuts still fire there.
+    if let Some(full) = keys.resolve_full(key, focus)
+        && (focus != Focus::Terminal
+            || matches!(full.action, Action::ToggleTerminal | Action::NewTerminal))
+    {
         if full.locked && !unlock {
             return None;
         }
@@ -149,7 +154,7 @@ pub fn resolve(keys: &Keybindings, key: KeyEvent, focus: Focus, unlock: bool) ->
     }
 
     match focus {
-        Focus::Terminal => resolve_terminal(key, ctrl, shift),
+        Focus::Terminal => resolve_terminal(key),
         Focus::Editor => resolve_editor(key, ctrl, shift),
         Focus::Sidebar => resolve_sidebar(key, ctrl, shift),
         Focus::SearchInput => resolve_search(key),
@@ -273,45 +278,147 @@ fn resolve_search(key: KeyEvent) -> Option<Action> {
     }
 }
 
-/// When the terminal is focused, converts keys into raw bytes to send to the PTY.
-fn resolve_terminal(key: KeyEvent, ctrl: bool, _shift: bool) -> Option<Action> {
-    let bytes: Vec<u8> = match key.code {
-        KeyCode::Char(c) => {
-            if ctrl {
-                // Ctrl+letter -> control character (0x01..0x1a)
-                let up = c.to_ascii_uppercase();
-                if up.is_ascii_alphabetic() {
-                    vec![(up as u8) - 0x40]
-                } else {
-                    let mut b = [0u8; 4];
-                    c.encode_utf8(&mut b).as_bytes().to_vec()
-                }
-            } else {
-                let mut b = [0u8; 4];
-                c.encode_utf8(&mut b).as_bytes().to_vec()
-            }
+/// When the terminal is focused every key goes to the PTY; the bytes are
+/// encoded in `update` (see `terminal_key_bytes`), which knows the screen modes.
+fn resolve_terminal(key: KeyEvent) -> Option<Action> {
+    Some(Action::PtyKey(key))
+}
+
+/// xterm encoding of a key press for the PTY, or `None` for keys with none.
+/// `app_cursor` is DECCKM (application cursor keys, set by htop, vim, less):
+/// unmodified arrows/Home/End then send `ESC O x` instead of `ESC [ x`.
+pub fn terminal_key_bytes(key: &KeyEvent, app_cursor: bool) -> Option<Vec<u8>> {
+    let m = key.modifiers;
+    let ctrl = m.contains(KeyModifiers::CONTROL);
+    let alt = m.contains(KeyModifiers::ALT);
+    // xterm modifier parameter: 1 + shift(1) + alt(2) + ctrl(4).
+    let param = 1 + m.contains(KeyModifiers::SHIFT) as u8 + 2 * alt as u8 + 4 * ctrl as u8;
+    // `ESC [ 1 ; m x` with modifiers, else `ESC [ x` / `ESC O x`.
+    let letter = |x: char, ss3: bool| -> Vec<u8> {
+        if param > 1 {
+            format!("\x1b[1;{param}{x}").into_bytes()
+        } else if ss3 {
+            format!("\x1bO{x}").into_bytes()
+        } else {
+            format!("\x1b[{x}").into_bytes()
         }
-        KeyCode::Enter => vec![b'\r'],
-        KeyCode::Backspace => vec![0x7f],
-        KeyCode::Tab => vec![b'\t'],
-        KeyCode::Esc => vec![0x1b],
-        KeyCode::Left => b"\x1b[D".to_vec(),
-        KeyCode::Right => b"\x1b[C".to_vec(),
-        KeyCode::Up => b"\x1b[A".to_vec(),
-        KeyCode::Down => b"\x1b[B".to_vec(),
-        KeyCode::Home => b"\x1b[H".to_vec(),
-        KeyCode::End => b"\x1b[F".to_vec(),
-        KeyCode::Delete => b"\x1b[3~".to_vec(),
-        KeyCode::PageUp => b"\x1b[5~".to_vec(),
-        KeyCode::PageDown => b"\x1b[6~".to_vec(),
+    };
+    // `ESC [ n ~` / `ESC [ n ; m ~`.
+    let tilde = |n: u8| -> Vec<u8> {
+        if param > 1 {
+            format!("\x1b[{n};{param}~").into_bytes()
+        } else {
+            format!("\x1b[{n}~").into_bytes()
+        }
+    };
+    // Alt sends the plain key's bytes prefixed with ESC.
+    let with_alt = |bytes: Vec<u8>| -> Vec<u8> {
+        if alt {
+            let mut out = vec![0x1b];
+            out.extend(bytes);
+            out
+        } else {
+            bytes
+        }
+    };
+    let bytes = match key.code {
+        // AltGr arrives as Ctrl+Alt on some platforms: it is plain text.
+        KeyCode::Char(_) if altgr_char(key).is_some() => {
+            let c = altgr_char(key)?;
+            c.to_string().into_bytes()
+        }
+        KeyCode::Char(c) if ctrl => with_alt(vec![match c.to_ascii_lowercase() {
+            l @ 'a'..='z' => l as u8 - b'a' + 1,
+            ' ' | '@' | '2' => 0x00,
+            '[' | '3' => 0x1b,
+            '\\' | '4' => 0x1c,
+            ']' | '5' => 0x1d,
+            '^' | '6' => 0x1e,
+            '_' | '-' | '7' => 0x1f,
+            '?' | '8' => 0x7f,
+            _ => return None,
+        }]),
+        KeyCode::Char(c) => with_alt(c.to_string().into_bytes()),
+        KeyCode::Enter => with_alt(vec![b'\r']),
+        KeyCode::Backspace => with_alt(vec![if ctrl { 0x08 } else { 0x7f }]),
+        KeyCode::Tab => with_alt(vec![b'\t']),
+        KeyCode::BackTab => b"\x1b[Z".to_vec(),
+        KeyCode::Esc => with_alt(vec![0x1b]),
+        KeyCode::Up => letter('A', app_cursor),
+        KeyCode::Down => letter('B', app_cursor),
+        KeyCode::Right => letter('C', app_cursor),
+        KeyCode::Left => letter('D', app_cursor),
+        KeyCode::Home => letter('H', app_cursor),
+        KeyCode::End => letter('F', app_cursor),
+        KeyCode::Insert => tilde(2),
+        KeyCode::Delete => tilde(3),
+        KeyCode::PageUp => tilde(5),
+        KeyCode::PageDown => tilde(6),
+        KeyCode::F(n @ 1..=4) => letter((b'P' + n - 1) as char, true),
+        KeyCode::F(n @ 5..=12) => tilde([15, 17, 18, 19, 20, 21, 23, 24][n as usize - 5]),
         _ => return None,
     };
-    Some(Action::PtyInput(bytes))
+    Some(bytes)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_keys_use_xterm_encoding() {
+        let k = |code, m| KeyEvent::new(code, m);
+        let none = KeyModifiers::NONE;
+        let bytes = |key: KeyEvent, app| terminal_key_bytes(&key, app).unwrap();
+        assert_eq!(bytes(k(KeyCode::F(10), none), false), b"\x1b[21~");
+        assert_eq!(bytes(k(KeyCode::F(5), none), false), b"\x1b[15~");
+        assert_eq!(bytes(k(KeyCode::F(1), none), false), b"\x1bOP");
+        assert_eq!(bytes(k(KeyCode::Up, none), false), b"\x1b[A");
+        assert_eq!(bytes(k(KeyCode::Up, none), true), b"\x1bOA");
+        assert_eq!(
+            bytes(k(KeyCode::Right, KeyModifiers::CONTROL), true),
+            b"\x1b[1;5C"
+        );
+        assert_eq!(
+            bytes(k(KeyCode::Char('x'), KeyModifiers::ALT), false),
+            b"\x1bx"
+        );
+        assert_eq!(
+            bytes(k(KeyCode::Char('c'), KeyModifiers::CONTROL), false),
+            [3]
+        );
+        assert_eq!(
+            bytes(k(KeyCode::BackTab, KeyModifiers::SHIFT), false),
+            b"\x1b[Z"
+        );
+    }
+
+    #[test]
+    fn focused_terminal_gets_every_key_but_its_own_shortcuts() {
+        let kb = Keybindings::default();
+        let ctrl = KeyModifiers::CONTROL;
+        let at = |code, m| resolve(&kb, KeyEvent::new(code, m), Focus::Terminal, false);
+        assert!(matches!(
+            at(KeyCode::Char('w'), ctrl),
+            Some(Action::PtyKey(_))
+        ));
+        assert!(matches!(
+            at(KeyCode::Char('q'), ctrl),
+            Some(Action::PtyKey(_))
+        ));
+        assert!(matches!(
+            at(KeyCode::F(10), KeyModifiers::NONE),
+            Some(Action::PtyKey(_))
+        ));
+        assert!(matches!(
+            at(KeyCode::Char('j'), ctrl),
+            Some(Action::ToggleTerminal)
+        ));
+        assert!(matches!(
+            at(KeyCode::Char('j'), ctrl | KeyModifiers::SHIFT),
+            Some(Action::NewTerminal)
+        ));
+    }
 
     #[test]
     fn altgr_symbols_are_text_but_ctrl_alt_letters_are_not() {

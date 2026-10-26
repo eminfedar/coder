@@ -374,9 +374,12 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
             }
             Vec::new()
         }
-        Action::PtyInput(bytes) => {
+        Action::PtyKey(key) => {
             let term = model.terminals.active_mut();
-            if let Some(session) = term.session.as_mut() {
+            let app_cursor = term.parser.screen().application_cursor();
+            if let Some(session) = term.session.as_mut()
+                && let Some(bytes) = keymap::terminal_key_bytes(&key, app_cursor)
+            {
                 session.write(&bytes);
                 // Typing snaps the view back to the live bottom.
                 term.scroll_to(0);
